@@ -1,0 +1,3098 @@
+// ============================================================================
+// PHASE 2: BLOG IDEA GENERATION - NOODL FUNCTION (FIXED)
+// Complete integration with Phase 1 trend analysis results
+// ============================================================================
+
+// ========================================================================
+// INITIALIZATION & CONFIGURATION
+// ========================================================================
+
+// User Authentication
+const userData = await Noodl.Variables.supabase.auth.getUser();
+const userID = userData.data.user.id;
+const supabase = Noodl.Variables.supabase;
+const idea_generation_url = Inputs.idea_generation_url 
+
+// Phase 2 Operation Mode
+const operationMode = Inputs.operationMode || "generate"; // "generate", "load", "manage"
+const currentView = Inputs.currentView || "overview"; // "overview", "ideas", "calendar", "insights"
+
+// Phase 1 Integration
+const analysisId = Inputs.analysisId?.trim();
+const loadFromPhase1 = Inputs.loadFromPhase1 || false;
+
+// Blog Idea Generation Configuration
+const generationConfig = {
+    minIdeas: parseInt(Inputs.minIdeas) || 15,
+    maxIdeas: parseInt(Inputs.maxIdeas) || 35,
+    contentMix: Inputs.contentMix || "balanced", // "viral_focused", "evergreen_focused", "balanced"
+    difficultyTarget: Inputs.difficultyTarget || "mixed", // "beginner", "intermediate", "advanced", "mixed"
+    businessFocus: Inputs.businessFocus || "lead_generation" // "lead_generation", "thought_leadership", "sales_enablement"
+};
+
+// LLM Configuration
+const llmProvider = Inputs.llm_provider || "openai";
+const llmProviderMap = {
+    'gemini': { model: Inputs.geminiModel || "gemini-2.0-flash", key: Inputs.geminiKey },
+    'openai': { model: Inputs.openaiModel || "gpt-4o-mini", key: Inputs.openaiKey },
+    'deepseek': { model: Inputs.deepseekModel || "deepseek-chat", key: Inputs.deepseekKey },
+    'anthropic': { model: Inputs.anthropicModel || "claude-3-sonnet-20240229", key: Inputs.anthropicKey }
+};
+
+const { model, key: llmKey } = llmProviderMap[llmProvider] || llmProviderMap.openai;
+
+// Optional API Keys
+const linkupKey = Inputs.linkupKey || null;
+const googleTrendsKey = Inputs.googleTrendsKey || null;
+
+// Blog Idea Management
+const ideaSelectionAction = Inputs.ideaSelectionAction; // "toggle", "bulk_select", "bulk_update"
+const targetIdeaId = Inputs.targetIdeaId;
+const bulkUpdateData = Inputs.bulkUpdateData || [];
+const bulkSelectionType = Inputs.bulkSelectionType; // "high_quality", "quick_wins", "all", "clear"
+
+// Content Management
+const selectedIdeaId = Inputs.selectedIdeaId;
+const priorityLevel = Inputs.priorityLevel; // "high", "medium", "low"
+const scheduledDate = Inputs.scheduledDate;
+const ideaNotes = Inputs.ideaNotes;
+
+// Filtering and Sorting
+const filterSettings = Inputs.filterSettings || {};
+const sortSettings = Inputs.sortSettings || { field: "overall_quality_score", order: "desc" };
+
+// ========================================================================
+// OPTIMIZED UTILITY FUNCTIONS
+// ========================================================================
+
+const Phase2Utils = {
+    // UUID Validation
+    validateUUID: (id) => {
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+        return uuidRegex.test(id);
+    },
+
+    // Safe Data Access
+    safeGet: (obj, path, defaultValue = null) => {
+        return path.split('.').reduce((current, key) => current?.[key], obj) ?? defaultValue;
+    },
+
+    // Quality Assessment
+    getQualityTier: (score) => {
+        if (score >= 85) return { tier: 'Excellent', color: '#10b981', icon: '🏆' };
+        if (score >= 75) return { tier: 'High Quality', color: '#3b82f6', icon: '⭐' };
+        if (score >= 65) return { tier: 'Good', color: '#f59e0b', icon: '✅' };
+        if (score >= 55) return { tier: 'Decent', color: '#f97316', icon: '📝' };
+        return { tier: 'Needs Work', color: '#ef4444', icon: '⚠️' };
+    },
+
+    // Content Format Helpers
+    getFormatIcon: (format) => {
+        const icons = {
+            'how_to_guide': '📚', 'listicle': '📝', 'comparison': '⚖️', 'case_study': '💼',
+            'trend_analysis': '📈', 'tutorial': '🎓', 'review': '⭐', 'interview': '🎤',
+            'opinion': '💭', 'news_analysis': '📰', 'resource_roundup': '🔗', 
+            'checklist': '✅', 'template': '📋', 'interactive_tool': '🛠️', 'infographic': '📊'
+        };
+        return icons[format] || '📄';
+    },
+
+    getFormatDisplay: (format) => {
+        return format.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+    },
+
+    // Difficulty Assessment
+    getDifficultyInfo: (level) => {
+        const difficultyMap = {
+            'beginner': { color: '#10b981', icon: '🟢', description: 'Easy to create' },
+            'intermediate': { color: '#f59e0b', icon: '🟡', description: 'Moderate effort' },
+            'advanced': { color: '#f97316', icon: '🟠', description: 'Significant effort' },
+            'expert': { color: '#ef4444', icon: '🔴', description: 'High expertise required' }
+        };
+        return difficultyMap[level] || difficultyMap['intermediate'];
+    },
+
+    // Business Impact Assessment
+    getBusinessImpactInfo: (score) => {
+        if (score >= 80) return { level: 'High Impact', color: '#10b981', icon: '💰' };
+        if (score >= 60) return { level: 'Medium Impact', color: '#f59e0b', icon: '📈' };
+        return { level: 'Low Impact', color: '#6b7280', icon: '📊' };
+    },
+
+    // Time Investment Estimation
+    estimateTimeInvestment: (wordCount, difficultyLevel) => {
+        const baseHours = Math.ceil(wordCount / 500); // 500 words per hour
+        const multipliers = { beginner: 1.0, intermediate: 1.3, advanced: 1.6, expert: 2.0 };
+        const totalHours = baseHours * (multipliers[difficultyLevel] || 1.3);
+        
+        if (totalHours <= 4) return { range: '2-4 hours', level: 'Quick' };
+        if (totalHours <= 8) return { range: '4-8 hours', level: 'Moderate' };
+        if (totalHours <= 16) return { range: '1-2 days', level: 'Substantial' };
+        return { range: '2+ days', level: 'Major Project' };
+    },
+
+    // SEO Potential Assessment
+    getSEOPotential: (score) => {
+        if (score >= 80) return { level: 'Excellent SEO', color: '#10b981', icon: '🚀' };
+        if (score >= 70) return { level: 'Good SEO', color: '#3b82f6', icon: '📈' };
+        if (score >= 60) return { level: 'Moderate SEO', color: '#f59e0b', icon: '📊' };
+        return { level: 'Needs SEO Work', color: '#ef4444', icon: '⚠️' };
+    },
+
+    // Viral Potential Assessment
+    getViralPotential: (score) => {
+        if (score >= 80) return { level: 'High Viral', color: '#ef4444', icon: '🔥' };
+        if (score >= 70) return { level: 'Good Viral', color: '#f97316', icon: '📈' };
+        if (score >= 60) return { level: 'Moderate Viral', color: '#f59e0b', icon: '📊' };
+        return { level: 'Low Viral', color: '#6b7280', icon: '📉' };
+    },
+
+    // Priority Level Colors
+    getPriorityInfo: (priority) => {
+        const priorityMap = {
+            'high': { color: '#ef4444', icon: '🔴', label: 'High Priority' },
+            'medium': { color: '#f59e0b', icon: '🟡', label: 'Medium Priority' },
+            'low': { color: '#10b981', icon: '🟢', label: 'Low Priority' }
+        };
+        return priorityMap[priority] || priorityMap['medium'];
+    },
+
+    // Generate Idea Summary
+    generateIdeaSummary: (idea) => {
+        const qualityTier = Phase2Utils.getQualityTier(idea.overall_quality_score || 0);
+        const timeInvestment = Phase2Utils.estimateTimeInvestment(
+            idea.estimated_word_count || 2500, 
+            idea.difficulty_level || 'intermediate'
+        );
+        const seoInfo = Phase2Utils.getSEOPotential(idea.seo_optimization_score || 0);
+        const viralInfo = Phase2Utils.getViralPotential(idea.viral_potential_score || 0);
+
+        return {
+            ...idea,
+            qualityTier,
+            timeInvestment,
+            seoInfo,
+            viralInfo,
+            formatDisplay: Phase2Utils.getFormatDisplay(idea.content_format || 'how_to_guide'),
+            formatIcon: Phase2Utils.getFormatIcon(idea.content_format || 'how_to_guide'),
+            difficultyInfo: Phase2Utils.getDifficultyInfo(idea.difficulty_level || 'intermediate'),
+            businessImpactInfo: Phase2Utils.getBusinessImpactInfo(idea.business_impact_score || 0),
+            priorityInfo: Phase2Utils.getPriorityInfo(idea.priority_level || 'medium'),
+            
+            // Ensure these fields exist with safe defaults
+            estimated_reading_time: idea.estimated_reading_time || Math.ceil((idea.estimated_word_count || 2500) / 200),
+            estimated_word_count: idea.estimated_word_count || 2500,
+            overall_quality_score: idea.overall_quality_score || 0,
+            viral_potential_score: idea.viral_potential_score || 0,
+            seo_optimization_score: idea.seo_optimization_score || 0,
+            business_impact_score: idea.business_impact_score || 0
+        };
+    }
+};
+
+// ========================================================================
+// DATA ACCESS LAYER
+// ========================================================================
+
+const Phase2DataAccess = {
+    // Load Phase 1 analysis for context
+    async loadPhase1Analysis(analysisId) {
+        console.log(`📊 Loading Phase 1 analysis: ${analysisId}`);
+        
+        try {
+            const { data, error } = await supabase
+                .from('trend_analyses')
+                .select(`
+                    *,
+                    trending_topics!inner(*),
+                    content_opportunities!inner(*)
+                `)
+                .eq('id', analysisId)
+                .eq('user_id', userID)
+                .single();
+
+            if (error) throw error;
+            if (!data) throw new Error("Analysis not found or access denied");
+
+            console.log("✅ Phase 1 analysis loaded:", {
+                topic: data.topic,
+                selectedTopics: data.trending_topics.filter(t => t.selected).length,
+                selectedOpportunities: data.content_opportunities.filter(o => o.selected).length
+            });
+
+            return data;
+        } catch (error) {
+            console.error("❌ Failed to load Phase 1 analysis:", error);
+            throw error;
+        }
+    },
+
+    // Check if blog ideas already exist for this analysis
+    async checkExistingBlogIdeas(analysisId) {
+        try {
+            const { data, error } = await supabase
+                .from('blog_ideas')
+                .select('id, created_at, title, overall_quality_score')
+                .eq('trend_analysis_id', analysisId)
+                .eq('user_id', userID)
+                .order('created_at', { ascending: false })
+                .limit(5);
+
+            if (error) throw error;
+
+            return {
+                exists: data && data.length > 0,
+                count: data?.length || 0,
+                latestIdeas: data || [],
+                lastGenerated: data?.[0]?.created_at || null
+            };
+        } catch (error) {
+            console.error("❌ Failed to check existing blog ideas:", error);
+            return { exists: false, count: 0, latestIdeas: [], lastGenerated: null };
+        }
+    },
+
+    // Load blog ideas with filtering and sorting
+    async loadBlogIdeas(analysisId, filters = {}, sorting = {}) {
+        console.log(`💡 Loading blog ideas for analysis: ${analysisId}`);
+        
+        try {
+            let query = supabase
+                .from('blog_ideas')
+                .select('*')
+                .eq('trend_analysis_id', analysisId)
+                .eq('user_id', userID);
+
+            // Apply filters
+            if (filters.contentFormat && filters.contentFormat !== 'all') {
+                query = query.eq('content_format', filters.contentFormat);
+            }
+            
+            if (filters.difficultyLevel && filters.difficultyLevel !== 'all') {
+                query = query.eq('difficulty_level', filters.difficultyLevel);
+            }
+            
+            if (filters.minQualityScore) {
+                query = query.gte('overall_quality_score', filters.minQualityScore);
+            }
+            
+            if (filters.selected !== undefined) {
+                query = query.eq('selected', filters.selected);
+            }
+            
+            if (filters.priorityLevel && filters.priorityLevel !== 'all') {
+                query = query.eq('priority_level', filters.priorityLevel);
+            }
+
+            // Apply sorting
+            const sortField = sorting.field || 'overall_quality_score';
+            const sortOrder = sorting.order || 'desc';
+            query = query.order(sortField, { ascending: sortOrder === 'asc' });
+
+            const { data, error } = await query;
+            
+            if (error) throw error;
+
+            console.log(`✅ Loaded ${data?.length || 0} blog ideas`);
+            return data || [];
+            
+        } catch (error) {
+            console.error("❌ Failed to load blog ideas:", error);
+            throw error;
+        }
+    },
+
+    // Load content calendar
+    async loadContentCalendar(analysisId) {
+        try {
+            console.log("📅 Attempting to load content calendar...");
+            
+            const { data, error } = await supabase
+                .from('content_calendar')
+                .select('*')
+                .eq('trend_analysis_id', analysisId)
+                .eq('user_id', userID)
+                .single();
+
+            if (error) {
+                if (error.code === 'PGRST116') {
+                    console.log("📅 No content calendar found (expected for load mode)");
+                    return null;
+                } else if (error.code === 'PGRST301') {
+                    console.log("📅 Content calendar table not found - will be created when generating");
+                    return null;
+                } else {
+                    console.warn("📅 Content calendar query failed:", error);
+                    return null;
+                }
+            }
+
+            console.log("✅ Content calendar loaded successfully");
+            return data || null;
+            
+        } catch (error) {
+            console.error("❌ Failed to load content calendar:", error);
+            return null;
+        }
+    },
+
+    // Load strategic insights
+    async loadStrategicInsights(analysisId) {
+        try {
+            const { data, error } = await supabase
+                .from('blog_generation_results')
+                .select('*')
+                .eq('trend_analysis_id', analysisId)
+                .eq('user_id', userID)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .single();
+
+            if (error && error.code !== 'PGRST116') throw error;
+            return data || null;
+        } catch (error) {
+            console.error("❌ Failed to load strategic insights:", error);
+            return null;
+        }
+    },
+
+    // Get blog ideas summary statistics
+    async getBlogIdeasSummary(analysisId) {
+        try {
+            const { data, error } = await supabase
+                .from('blog_ideas')
+                .select(`
+                    overall_quality_score,
+                    viral_potential_score,
+                    seo_optimization_score,
+                    business_impact_score,
+                    content_format,
+                    difficulty_level,
+                    selected,
+                    priority_level
+                `)
+                .eq('trend_analysis_id', analysisId)
+                .eq('user_id', userID);
+
+            if (error) throw error;
+            if (!data || data.length === 0) return null;
+
+            // Calculate statistics
+            const totalIdeas = data.length;
+            const selectedIdeas = data.filter(idea => idea.selected).length;
+            const avgQualityScore = Math.round(data.reduce((sum, idea) => sum + (idea.overall_quality_score || 0), 0) / totalIdeas);
+            
+            // Quality distribution
+            const qualityDistribution = {
+                excellent: data.filter(idea => (idea.overall_quality_score || 0) >= 85).length,
+                high: data.filter(idea => (idea.overall_quality_score || 0) >= 75 && (idea.overall_quality_score || 0) < 85).length,
+                good: data.filter(idea => (idea.overall_quality_score || 0) >= 65 && (idea.overall_quality_score || 0) < 75).length,
+                decent: data.filter(idea => (idea.overall_quality_score || 0) >= 55 && (idea.overall_quality_score || 0) < 65).length,
+                needsWork: data.filter(idea => (idea.overall_quality_score || 0) < 55).length
+            };
+
+            // Format distribution
+            const formatCounts = {};
+            data.forEach(idea => {
+                formatCounts[idea.content_format] = (formatCounts[idea.content_format] || 0) + 1;
+            });
+
+            // Priority distribution
+            const priorityCounts = {
+                high: data.filter(idea => idea.priority_level === 'high').length,
+                medium: data.filter(idea => idea.priority_level === 'medium').length,
+                low: data.filter(idea => idea.priority_level === 'low').length
+            };
+
+            return {
+                totalIdeas,
+                selectedIdeas,
+                avgQualityScore,
+                qualityDistribution,
+                formatDistribution: formatCounts,
+                priorityDistribution: priorityCounts,
+                highImpactIdeas: data.filter(idea => (idea.business_impact_score || 0) >= 80).length,
+                quickWinIdeas: data.filter(idea => 
+                    idea.difficulty_level === 'beginner' && (idea.overall_quality_score || 0) >= 70
+                ).length,
+                viralPotentialIdeas: data.filter(idea => (idea.viral_potential_score || 0) >= 80).length,
+                seoOptimizedIdeas: data.filter(idea => (idea.seo_optimization_score || 0) >= 80).length
+            };
+        } catch (error) {
+            console.error("❌ Failed to get blog ideas summary:", error);
+            return null;
+        }
+    }
+};
+
+// ========================================================================
+// BLOG IDEA MANAGEMENT
+// ========================================================================
+
+// ========================================================================
+// DIRECT SUPABASE BLOG IDEA MANAGEMENT (NO PYTHON BACKEND)
+// ========================================================================
+
+
+
+
+
+const DirectBlogIdeaManager = {
+    // Toggle individual blog idea selection - DIRECT SUPABASE
+    async toggleIdeaSelection(ideaId, newSelectedState = null) {
+        if (!Phase2Utils.validateUUID(ideaId)) {
+            return { success: false, error: "Invalid idea ID format" };
+        }
+
+        try {
+            console.log(`🎯 Toggling selection for idea: ${ideaId}`);
+            
+            // Get current state
+            const { data: currentData, error: fetchError } = await supabase
+                .from('blog_ideas')
+                .select('id, selected, title')
+                .eq('id', ideaId)
+                .eq('user_id', userID)
+                .single();
+
+            if (fetchError) {
+                throw new Error(fetchError.code === 'PGRST116' ? "Blog idea not found or access denied" : fetchError.message);
+            }
+
+            const targetSelectedState = newSelectedState !== null ? newSelectedState : !currentData.selected;
+
+            // Update database directly
+            const { data, error } = await supabase
+                .from('blog_ideas')
+                .update({ 
+                    selected: targetSelectedState,
+                    updated_at: new Date().toISOString()
+                })
+                .eq('id', ideaId)
+                .eq('user_id', userID)
+                .select('id, title, selected')
+                .single();
+
+            if (error) {
+                throw new Error(error.code === 'PGRST116' ? "Blog idea not found or access denied" : error.message);
+            }
+
+            console.log(`✅ Blog idea selection updated directly in Supabase:`, data);
+            return { success: true, newState: targetSelectedState, item: data };
+
+        } catch (error) {
+            console.error('❌ Direct Supabase selection failed:', error);
+            return { success: false, error: error.message };
+        }
+    },
+
+    async generateBlogIdeas(analysisId, generationConfig, llmConfig) {
+
+            console.log("🚀 Starting blog idea generation...");
+
+                    try {
+                        const response = await fetch(`${idea_generation_url}/api/v2/generate-blog-ideas/${analysisId}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                user_id: userID,
+                                llm_config: llmConfig,
+                                generation_config: generationConfig,
+                                linkup_api_key: linkupKey,                               
+                                google_trends_api_key: googleTrendsKey
+                            })
+                        });
+
+
+            if (!response.ok) {
+                throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+            }
+
+            const result = await response.json();
+            
+            if (!result.success) {
+                throw new Error(result.error || 'Blog idea generation failed');
+            }
+            
+            console.log("✅ Blog idea generation completed:", {
+                totalIdeas: result.metadata.total_blog_ideas,
+                averageQuality: result.metadata.average_quality_score,
+                processingTime: result.metadata.processing_time
+            });
+            
+            return result;
+            
+        } catch (error) {
+            console.error("❌ Blog idea generation failed:", error);
+            throw error;
+        }
+    },
+
+    // Update blog idea details - DIRECT SUPABASE
+    async updateIdeaDetails(ideaId, updateData) {
+        if (!Phase2Utils.validateUUID(ideaId)) {
+            return { success: false, error: "Invalid idea ID format" };
+        }
+
+        try {
+            console.log(`📝 Updating idea details directly in Supabase: ${ideaId}`);
+            
+            const updatePayload = {
+                updated_at: new Date().toISOString()
+            };
+
+            // Add valid update fields
+            const allowedFields = ['selected', 'priority_level', 'scheduled_publish_date', 'notes'];
+            allowedFields.forEach(field => {
+                if (updateData[field] !== undefined) {
+                    updatePayload[field] = updateData[field];
+                }
+            });
+
+            const { data, error } = await supabase
+                .from('blog_ideas')
+                .update(updatePayload)
+                .eq('id', ideaId)
+                .eq('user_id', userID)
+                .select('*')
+                .single();
+
+            if (error) {
+                throw new Error(error.message);
+            }
+
+            console.log("✅ Blog idea updated directly in Supabase:", data.title);
+            return { success: true, item: data };
+
+        } catch (error) {
+            console.error('❌ Direct Supabase update failed:', error);
+            return { success: false, error: error.message };
+        }
+    },
+
+    // Bulk selection operations - DIRECT SUPABASE
+    async bulkSelection(blogIdeas, selectionType) {
+        try {
+            console.log(`📦 Bulk selection directly in Supabase: ${selectionType}`);
+            
+            let targetIds = [];
+            let selectedValue = true;
+
+            switch (selectionType) {
+                case 'high_quality':
+                    targetIds = blogIdeas.filter(idea => (idea.overall_quality_score || 0) >= 80).map(idea => idea.id);
+                    break;
+                case 'quick_wins':
+                    targetIds = blogIdeas.filter(idea => 
+                        idea.difficulty_level === 'beginner' && (idea.overall_quality_score || 0) >= 70
+                    ).map(idea => idea.id);
+                    break;
+                case 'viral_potential':
+                    targetIds = blogIdeas.filter(idea => (idea.viral_potential_score || 0) >= 80).map(idea => idea.id);
+                    break;
+                case 'seo_optimized':
+                    targetIds = blogIdeas.filter(idea => (idea.seo_optimization_score || 0) >= 80).map(idea => idea.id);
+                    break;
+                case 'all':
+                    targetIds = blogIdeas.map(idea => idea.id);
+                    break;
+                case 'clear':
+                    targetIds = blogIdeas.filter(idea => idea.selected).map(idea => idea.id);
+                    selectedValue = false;
+                    break;
+            }
+
+            if (targetIds.length === 0) {
+                return { success: false, error: "No blog ideas match the selection criteria" };
+            }
+
+            // Bulk update directly in Supabase
+            const { data, error } = await supabase
+                .from('blog_ideas')
+                .update({ 
+                    selected: selectedValue,
+                    updated_at: new Date().toISOString()
+                })
+                .in('id', targetIds)
+                .eq('user_id', userID)
+                .select('id, title, selected');
+
+            if (error) {
+                throw new Error(error.message);
+            }
+
+            console.log(`✅ Bulk selection completed directly in Supabase: ${targetIds.length} ideas ${selectedValue ? 'selected' : 'deselected'}`);
+            return { success: true, affectedCount: targetIds.length, selectionType, selectedValue, updatedItems: data };
+
+        } catch (error) {
+            console.error('❌ Direct Supabase bulk selection failed:', error);
+            return { success: false, error: error.message };
+        }
+    },
+
+    // Bulk update multiple ideas - DIRECT SUPABASE
+    async bulkUpdateIdeas(updates) {
+        try {
+            console.log(`📝 Bulk updating ${updates.length} ideas directly in Supabase`);
+            
+            let successCount = 0;
+            const results = [];
+
+            // Process updates sequentially to avoid conflicts
+            for (const update of updates) {
+                if (!update.id || !Phase2Utils.validateUUID(update.id)) {
+                    results.push({ success: false, error: "Invalid ID", id: update.id });
+                    continue;
+                }
+
+                const result = await DirectBlogIdeaManager.updateIdeaDetails(update.id, update);
+                if (result.success) {
+                    successCount++;
+                }
+                results.push(result);
+            }
+
+            console.log(`✅ Bulk update completed: ${successCount}/${updates.length} successful`);
+            return { success: true, successCount, totalAttempted: updates.length, results };
+
+        } catch (error) {
+            console.error('❌ Direct Supabase bulk update failed:', error);
+            return { success: false, error: error.message };
+        }
+    },
+
+    // Get updated blog ideas summary after selections - DIRECT SUPABASE
+    async getUpdatedSelectionSummary(analysisId) {
+        try {
+            const { data, error } = await supabase
+                .from('blog_ideas')
+                .select('id, selected, overall_quality_score, difficulty_level')
+                .eq('trend_analysis_id', analysisId)
+                .eq('user_id', userID);
+
+            if (error) throw error;
+
+            const selectedIdeas = data.filter(idea => idea.selected);
+            const totalIdeas = data.length;
+
+            return {
+                selectedCount: selectedIdeas.length,
+                totalCount: totalIdeas,
+                selectionProgress: totalIdeas > 0 ? Math.round((selectedIdeas.length / totalIdeas) * 100) : 0,
+                averageQualityOfSelected: selectedIdeas.length > 0 ? 
+                    Math.round(selectedIdeas.reduce((sum, idea) => sum + (idea.overall_quality_score || 0), 0) / selectedIdeas.length) : 0,
+                quickWinSelections: selectedIdeas.filter(idea => 
+                    idea.difficulty_level === 'beginner' && (idea.overall_quality_score || 0) >= 70
+                ).length
+            };
+        } catch (error) {
+            console.error('❌ Failed to get updated selection summary:', error);
+            return null;
+        }
+    }
+};
+
+// ========================================================================
+// MAIN EXECUTION LOGIC
+// ========================================================================
+
+// Initialize outputs
+Outputs.loading = true;
+Outputs.error = "";
+Outputs.success = false;
+let enhancedBlogIdeas = [];
+let selectedIdeas = [];
+
+
+
+
+try {
+    // ====================================================================
+    // INPUT VALIDATION
+    // ====================================================================
+    
+    if (!analysisId || !Phase2Utils.validateUUID(analysisId)) {
+        throw new Error("Valid Phase 1 analysis ID is required");
+    }
+
+    if (operationMode === "generate" && !llmKey) {
+        throw new Error(`API key is required for ${llmProvider}`);
+    }
+
+    // ====================================================================
+    // LOAD PHASE 1 CONTEXT
+    // ====================================================================
+    
+    console.log("📊 Loading Phase 1 context...");
+    const phase1Analysis = await Phase2DataAccess.loadPhase1Analysis(analysisId);
+    
+    // Extract Phase 1 context
+    const researchContext = {
+        analysisId: analysisId,
+        topic: phase1Analysis.topic,
+        targetAudience: phase1Analysis.target_audience,
+        focusArea: phase1Analysis.focus_area,
+        confidenceScore: Phase2Utils.safeGet(phase1Analysis, 'metadata.confidence_score', 85),
+        selectedTopics: phase1Analysis.trending_topics.filter(t => t.selected),
+        selectedOpportunities: phase1Analysis.content_opportunities.filter(o => o.selected),
+        totalSelections: phase1Analysis.trending_topics.filter(t => t.selected).length + 
+                        phase1Analysis.content_opportunities.filter(o => o.selected).length
+    };
+
+    // Validate Phase 1 selections
+    if (researchContext.totalSelections === 0) {
+        throw new Error("No items selected in Phase 1. Please return to Phase 1 and make selections.");
+    }
+
+    console.log("✅ Phase 1 context loaded:", {
+        topic: researchContext.topic,
+        totalSelections: researchContext.totalSelections,
+        selectedTopics: researchContext.selectedTopics.length,
+        selectedOpportunities: researchContext.selectedOpportunities.length
+    });
+
+    // ====================================================================
+    // CHECK EXISTING BLOG IDEAS
+    // ====================================================================
+    
+    const existingIdeas = await Phase2DataAccess.checkExistingBlogIdeas(analysisId);
+    const hasExistingIdeas = existingIdeas.exists;
+
+    // ====================================================================
+    // HANDLE DIFFERENT OPERATION MODES
+    // ====================================================================
+    
+    let blogIdeas = [];
+    let contentCalendar = null;
+    let strategicInsights = null;
+    let blogIdeasSummary = null;
+    let generationResult = null;
+
+    if (operationMode === "generate") {
+ // ================================================================
+// BLOG IDEA GENERATION MODE
+// ================================================================
+
+if (hasExistingIdeas && !Inputs.forceRegenerate) {
+    console.log("⚠️ Blog ideas already exist for this analysis");
+    Outputs.showRegenerateConfirmation = true;
+    Outputs.existingIdeasInfo = {
+        count: existingIdeas.count,
+        lastGenerated: existingIdeas.lastGenerated,
+        latestIdeas: existingIdeas.latestIdeas.map(idea => ({
+            title: idea.title,
+            qualityScore: idea.overall_quality_score,
+            createdAt: idea.created_at
+        }))
+    };
+    
+    // Load existing data for display
+    blogIdeas = await Phase2DataAccess.loadBlogIdeas(analysisId, filterSettings, sortSettings);
+    contentCalendar = await Phase2DataAccess.loadContentCalendar(analysisId);
+    strategicInsights = await Phase2DataAccess.loadStrategicInsights(analysisId);
+    blogIdeasSummary = await Phase2DataAccess.getBlogIdeasSummary(analysisId);
+} else {
+    console.log("🚀 Generating new blog ideas via API...");
+    
+    // Prepare LLM configuration
+    const llmConfig = {
+        provider: llmProvider,
+        model: model,
+        api_key: llmKey
+    };
+
+    // RESTORED: Generate blog ideas via API call
+    generationResult = await DirectBlogIdeaManager.generateBlogIdeas(analysisId, generationConfig, llmConfig);
+
+
+    // Load the newly generated data
+    blogIdeas = await Phase2DataAccess.loadBlogIdeas(analysisId, filterSettings, sortSettings);
+    contentCalendar = await Phase2DataAccess.loadContentCalendar(analysisId);
+    strategicInsights = await Phase2DataAccess.loadStrategicInsights(analysisId);
+    blogIdeasSummary = await Phase2DataAccess.getBlogIdeasSummary(analysisId);
+    
+    console.log("✅ Blog idea generation completed:", {
+        totalIdeas: blogIdeas.length,
+        avgQuality: blogIdeasSummary?.avgQualityScore || 0
+    });
+}
+
+} else if (operationMode === "load") {
+    // ================================================================
+    // LOAD EXISTING DATA MODE
+    // ================================================================
+    
+    console.log("📂 Loading existing blog ideas...");
+    
+    if (!hasExistingIdeas) {
+        throw new Error("No blog ideas found for this analysis. Please generate ideas first.");
+    }
+    
+    blogIdeas = await Phase2DataAccess.loadBlogIdeas(analysisId, filterSettings, sortSettings);
+    contentCalendar = await Phase2DataAccess.loadContentCalendar(analysisId);
+    strategicInsights = await Phase2DataAccess.loadStrategicInsights(analysisId);
+    blogIdeasSummary = await Phase2DataAccess.getBlogIdeasSummary(analysisId);
+    
+} else if (operationMode === "manage") {
+        
+        // ================================================================
+        // MANAGEMENT MODE (SELECTIONS, UPDATES, ETC.)
+        // ================================================================
+        
+        console.log("🛠️ Blog idea management mode...");
+        
+        if (!hasExistingIdeas) {
+            throw new Error("No blog ideas found for this analysis. Please generate ideas first.");
+        }
+        
+        // Load current data first
+        blogIdeas = await Phase2DataAccess.loadBlogIdeas(analysisId, filterSettings, sortSettings);
+        
+        // Handle different management actions - DIRECT SUPABASE
+        if (ideaSelectionAction === "toggle" && targetIdeaId) {
+            console.log(`🎯 Toggling selection for idea: ${targetIdeaId}`);
+            
+            const result = await DirectBlogIdeaManager.toggleIdeaSelection(targetIdeaId);
+            
+            if (result.success) {
+                Outputs.selectionSuccess = true;
+                Outputs.lastSelectionUpdate = Date.now();
+                Outputs.selectionResult = {
+                    ideaId: targetIdeaId,
+                    newState: result.newState,
+                    ideaTitle: result.item.title,
+                    message: `"${result.item.title}" ${result.newState ? 'selected' : 'deselected'}`
+                };
+                console.log("✅ Idea selection updated successfully via direct Supabase");
+                
+                // Update local data immediately for UI feedback
+                const ideaIndex = blogIdeas.findIndex(idea => idea.id === targetIdeaId);
+                if (ideaIndex !== -1) {
+                    blogIdeas[ideaIndex].selected = result.newState;
+                    blogIdeas[ideaIndex].updated_at = new Date().toISOString();
+                }
+                
+                // Get updated selection summary
+                const updatedSummary = await DirectBlogIdeaManager.getUpdatedSelectionSummary(analysisId);
+                if (updatedSummary) {
+                    Outputs.UpdatedSelectionSummary = updatedSummary;
+                }
+                
+            } else {
+                Outputs.selectionError = true;
+                Outputs.error = result.error;
+                console.error("❌ Direct Supabase selection failed:", result.error);
+            }
+            
+        } else if (ideaSelectionAction === "bulk_select" && bulkSelectionType) {
+            console.log(`📦 Bulk selection via direct Supabase: ${bulkSelectionType}`);
+            
+            const result = await DirectBlogIdeaManager.bulkSelection(blogIdeas, bulkSelectionType);
+            
+            if (result.success) {
+                Outputs.bulkSelectionSuccess = true;
+                Outputs.lastSelectionUpdate = Date.now();
+                Outputs.bulkSelectionResult = {
+                    type: bulkSelectionType,
+                    affectedCount: result.affectedCount,
+                    selectedValue: result.selectedValue,
+                    message: `${result.affectedCount} ideas ${result.selectedValue ? 'selected' : 'deselected'}`,
+                    updatedItems: result.updatedItems || []
+                };
+                console.log("✅ Bulk selection completed via direct Supabase");
+                
+                // Update local data for immediate UI feedback
+                if (result.updatedItems) {
+                    result.updatedItems.forEach(updatedItem => {
+                        const ideaIndex = blogIdeas.findIndex(idea => idea.id === updatedItem.id);
+                        if (ideaIndex !== -1) {
+                            blogIdeas[ideaIndex].selected = updatedItem.selected;
+                            blogIdeas[ideaIndex].updated_at = new Date().toISOString();
+                        }
+                    });
+                }
+                
+                // Get updated selection summary
+                const updatedSummary = await DirectBlogIdeaManager.getUpdatedSelectionSummary(analysisId);
+                if (updatedSummary) {
+                    Outputs.UpdatedSelectionSummary = updatedSummary;
+                }
+                
+            } else {
+                Outputs.selectionError = true;
+                Outputs.error = result.error;
+                console.error("❌ Direct Supabase bulk selection failed:", result.error);
+            }
+            
+        } else if (ideaSelectionAction === "bulk_update" && bulkUpdateData.length > 0) {
+            console.log(`📝 Bulk update via direct Supabase: ${bulkUpdateData.length} ideas`);
+            
+            const result = await DirectBlogIdeaManager.bulkUpdateIdeas(bulkUpdateData);
+            
+            if (result.success) {
+                Outputs.bulkUpdateSuccess = true;
+                Outputs.lastUpdateResult = Date.now();
+                Outputs.bulkUpdateResult = {
+                    successCount: result.successCount,
+                    totalAttempted: result.totalAttempted,
+                    message: `${result.successCount}/${result.totalAttempted} ideas updated successfully`,
+                    results: result.results
+                };
+                console.log("✅ Bulk update completed via direct Supabase");
+                
+                // Reload data to reflect all changes
+                blogIdeas = await Phase2DataAccess.loadBlogIdeas(analysisId, filterSettings, sortSettings);
+                
+            } else {
+                Outputs.bulkUpdateError = true;
+                Outputs.error = result.error;
+                console.error("❌ Direct Supabase bulk update failed:", result.error);
+            }
+            
+        } else if (selectedIdeaId && (priorityLevel || scheduledDate || ideaNotes !== undefined)) {
+            console.log(`📝 Updating idea details via direct Supabase: ${selectedIdeaId}`);
+            
+            const updateData = {};
+            if (priorityLevel) updateData.priority_level = priorityLevel;
+            if (scheduledDate) updateData.scheduled_publish_date = scheduledDate;
+            if (ideaNotes !== undefined) updateData.notes = ideaNotes;
+            
+            const result = await DirectBlogIdeaManager.updateIdeaDetails(selectedIdeaId, updateData);
+            
+            if (result.success) {
+                Outputs.updateSuccess = true;
+                Outputs.lastUpdate = Date.now();
+                Outputs.updateResult = {
+                    ideaId: selectedIdeaId,
+                    ideaTitle: result.item.title,
+                    updatedFields: Object.keys(updateData),
+                    message: `"${result.item.title}" updated successfully`
+                };
+                console.log("✅ Idea details updated successfully via direct Supabase");
+                
+                // Update local data immediately
+                const ideaIndex = blogIdeas.findIndex(idea => idea.id === selectedIdeaId);
+                if (ideaIndex !== -1) {
+                    Object.assign(blogIdeas[ideaIndex], updateData);
+                    blogIdeas[ideaIndex].updated_at = new Date().toISOString();
+                }
+                
+            } else {
+                Outputs.updateError = true;
+                Outputs.error = result.error;
+                console.error("❌ Direct Supabase idea update failed:", result.error);
+            }
+        }
+        
+        // Load supporting data
+        contentCalendar = await Phase2DataAccess.loadContentCalendar(analysisId);
+        strategicInsights = await Phase2DataAccess.loadStrategicInsights(analysisId);
+        blogIdeasSummary = await Phase2DataAccess.getBlogIdeasSummary(analysisId);
+    }
+
+    // ========================================================================
+    // DATA VALIDATION AND DEBUGGING
+    // ========================================================================
+
+    console.log("🔍 DEBUGGING: Raw blogIdeas data from Supabase:", blogIdeas);
+    console.log("🔍 DEBUGGING: blogIdeasSummary data:", blogIdeasSummary);
+
+    // Validate raw data structure
+    if (blogIdeas && blogIdeas.length > 0) {
+        console.log("✅ Blog ideas loaded:", blogIdeas.length);
+        console.log("🔍 First blog idea structure:", blogIdeas[0]);
+    } else {
+        console.error("❌ No blog ideas found or empty array");
+    }
+
+    // ========================================================================
+    // ENHANCED DATA VALIDATION WITH FALLBACKS
+    // ========================================================================
+
+    // Add this validation function
+    const validateAndParseScore = (score, fieldName, defaultValue = 0) => {
+        if (score === null || score === undefined) {
+            console.warn(`⚠️ ${fieldName} is null/undefined, using default:`, defaultValue);
+            return defaultValue;
+        }
+        
+        if (typeof score === 'string') {
+            const parsed = parseFloat(score);
+            if (isNaN(parsed)) {
+                console.warn(`⚠️ ${fieldName} cannot be parsed as number:`, score, "using default:", defaultValue);
+                return defaultValue;
+            }
+            console.log(`✅ ${fieldName} parsed from string:`, score, "→", parsed);
+            return parsed;
+        }
+        
+        if (typeof score === 'number') {
+            if (isNaN(score)) {
+                console.warn(`⚠️ ${fieldName} is NaN, using default:`, defaultValue);
+                return defaultValue;
+            }
+            return score;
+        }
+        
+        console.warn(`⚠️ ${fieldName} has unexpected type:`, typeof score, score, "using default:", defaultValue);
+        return defaultValue;
+    };
+
+    // ========================================================================
+    // IMPROVED DATA TRANSFORMATION WITH VALIDATION
+    // ========================================================================
+
+    console.log("🔄 Transforming blog ideas data with validation...");
+
+    enhancedBlogIdeas = blogIdeas.map((idea, index) => {
+        console.log(`🔍 Processing idea ${index + 1}:`, idea.title);
+        
+        // Validate and parse all numeric fields
+        const overallQualityScore = validateAndParseScore(idea.overall_quality_score, 'overall_quality_score', 75);
+        const viralPotentialScore = validateAndParseScore(idea.viral_potential_score, 'viral_potential_score', 65);
+        const seoOptimizationScore = validateAndParseScore(idea.seo_optimization_score, 'seo_optimization_score', 70);
+        const businessImpactScore = validateAndParseScore(idea.business_impact_score, 'business_impact_score', 60);
+        const estimatedWordCount = validateAndParseScore(idea.estimated_word_count, 'estimated_word_count', 2500);
+        const estimatedReadingTime = validateAndParseScore(idea.estimated_reading_time, 'estimated_reading_time', Math.ceil(estimatedWordCount / 200));
+        
+        // Validate string fields
+        const contentFormat = idea.content_format || 'how_to_guide';
+        const difficultyLevel = idea.difficulty_level || 'intermediate';
+        const priorityLevel = idea.priority_level || 'medium';
+        
+        console.log(`✅ Validated scores for "${idea.title}": Quality=${overallQualityScore}, Viral=${viralPotentialScore}, SEO=${seoOptimizationScore}`);
+        
+        // Create enhanced idea with validated data
+        const enhanced = {
+            ...idea,
+            // Use validated scores
+            overall_quality_score: overallQualityScore,
+            viral_potential_score: viralPotentialScore,
+            seo_optimization_score: seoOptimizationScore,
+            business_impact_score: businessImpactScore,
+            estimated_word_count: estimatedWordCount,
+            estimated_reading_time: estimatedReadingTime,
+            content_format: contentFormat,
+            difficulty_level: difficultyLevel,
+            priority_level: priorityLevel,
+            
+            // Generate utility info using validated scores
+            qualityTier: Phase2Utils.getQualityTier(overallQualityScore),
+            timeInvestment: Phase2Utils.estimateTimeInvestment(estimatedWordCount, difficultyLevel),
+            seoInfo: Phase2Utils.getSEOPotential(seoOptimizationScore),
+            viralInfo: Phase2Utils.getViralPotential(viralPotentialScore),
+            formatDisplay: Phase2Utils.getFormatDisplay(contentFormat),
+            formatIcon: Phase2Utils.getFormatIcon(contentFormat),
+            difficultyInfo: Phase2Utils.getDifficultyInfo(difficultyLevel),
+            businessImpactInfo: Phase2Utils.getBusinessImpactInfo(businessImpactScore),
+            priorityInfo: Phase2Utils.getPriorityInfo(priorityLevel),
+            
+            // Add rank
+            rank: index + 1,
+            
+            // Safe selected status
+            selected: Boolean(idea.selected)
+        };
+        
+        // Handle JSON fields safely
+        try {
+            // Parse primary keywords
+            let primaryKeywords = [];
+            if (idea.primary_keywords) {
+                if (Array.isArray(idea.primary_keywords)) {
+                    primaryKeywords = idea.primary_keywords;
+                } else if (typeof idea.primary_keywords === 'string') {
+                    primaryKeywords = JSON.parse(idea.primary_keywords || '[]');
+                }
+            }
+            enhanced.primaryKeywords = primaryKeywords;
+            enhanced.keywordsDisplay = primaryKeywords.slice(0, 3).join(', ') || 'No keywords';
+            
+            // Parse secondary keywords
+            let secondaryKeywords = [];
+            if (idea.secondary_keywords) {
+                if (Array.isArray(idea.secondary_keywords)) {
+                    secondaryKeywords = idea.secondary_keywords;
+                } else if (typeof idea.secondary_keywords === 'string') {
+                    secondaryKeywords = JSON.parse(idea.secondary_keywords || '[]');
+                }
+            }
+            enhanced.secondaryKeywords = secondaryKeywords;
+            
+            // Parse outline
+            let outlineArray = [];
+            if (idea.outline) {
+                if (Array.isArray(idea.outline)) {
+                    outlineArray = idea.outline;
+                } else if (typeof idea.outline === 'string') {
+                    outlineArray = JSON.parse(idea.outline || '[]');
+                }
+            }
+            enhanced.outlineArray = outlineArray;
+            
+        } catch (parseError) {
+            console.warn(`❌ Error parsing JSON fields for idea "${idea.title}":`, parseError);
+            enhanced.primaryKeywords = [];
+            enhanced.secondaryKeywords = [];
+            enhanced.outlineArray = [];
+            enhanced.keywordsDisplay = 'Keywords unavailable';
+        }
+        
+        // Safe display fields
+        enhanced.readingTimeDisplay = `${enhanced.estimated_reading_time} min read`;
+        enhanced.wordCountDisplay = `${enhanced.estimated_word_count} words`;
+        
+        return enhanced;
+    });
+
+    console.log(`✅ Successfully transformed ${enhancedBlogIdeas.length} blog ideas`);
+
+    // ========================================================================
+    // RECALCULATE BLOG IDEAS SUMMARY WITH VALIDATED DATA
+    // ========================================================================
+
+    // Recalculate summary using the enhanced data (not the raw summary from Supabase)
+    const recalculatedSummary = {
+        totalIdeas: enhancedBlogIdeas.length,
+        selectedIdeas: enhancedBlogIdeas.filter(idea => idea.selected).length,
+        avgQualityScore: enhancedBlogIdeas.length > 0 ? 
+            Math.round(enhancedBlogIdeas.reduce((sum, idea) => sum + idea.overall_quality_score, 0) / enhancedBlogIdeas.length) : 0,
+        
+        // Quality distribution
+        qualityDistribution: {
+            excellent: enhancedBlogIdeas.filter(idea => idea.overall_quality_score >= 85).length,
+            high: enhancedBlogIdeas.filter(idea => idea.overall_quality_score >= 75 && idea.overall_quality_score < 85).length,
+            good: enhancedBlogIdeas.filter(idea => idea.overall_quality_score >= 65 && idea.overall_quality_score < 75).length,
+            decent: enhancedBlogIdeas.filter(idea => idea.overall_quality_score >= 55 && idea.overall_quality_score < 65).length,
+            needsWork: enhancedBlogIdeas.filter(idea => idea.overall_quality_score < 55).length
+        },
+        
+        // Format distribution
+        formatDistribution: enhancedBlogIdeas.reduce((acc, idea) => {
+            acc[idea.content_format] = (acc[idea.content_format] || 0) + 1;
+            return acc;
+        }, {}),
+        
+        // Priority distribution
+        priorityDistribution: {
+            high: enhancedBlogIdeas.filter(idea => idea.priority_level === 'high').length,
+            medium: enhancedBlogIdeas.filter(idea => idea.priority_level === 'medium').length,
+            low: enhancedBlogIdeas.filter(idea => idea.priority_level === 'low').length
+        },
+        
+        // Special categories
+        highImpactIdeas: enhancedBlogIdeas.filter(idea => idea.business_impact_score >= 80).length,
+        quickWinIdeas: enhancedBlogIdeas.filter(idea => 
+            idea.difficulty_level === 'beginner' && idea.overall_quality_score >= 70
+        ).length,
+        viralPotentialIdeas: enhancedBlogIdeas.filter(idea => idea.viral_potential_score >= 80).length,
+        seoOptimizedIdeas: enhancedBlogIdeas.filter(idea => idea.seo_optimization_score >= 80).length
+    };
+
+    console.log("📊 Recalculated summary:", recalculatedSummary);
+
+    // Use the recalculated summary instead of the original blogIdeasSummary
+    blogIdeasSummary = recalculatedSummary;
+
+    // ====================================================================
+    // ENHANCED CALCULATIONS FOR MOCKUP SUPPORT
+    // ====================================================================
+
+    // Get selected ideas for calculations
+    selectedIdeas = enhancedBlogIdeas.filter(idea => idea.selected);
+
+    // Calculate financial projections
+    const totalWordCount = enhancedBlogIdeas.reduce((sum, idea) => sum + (idea.estimated_word_count || 2500), 0);
+    const avgDifficultyScore = enhancedBlogIdeas.length > 0 ? enhancedBlogIdeas.reduce((sum, idea) => {
+        const difficultyScore = {beginner: 1, intermediate: 2, advanced: 3, expert: 4}[idea.difficulty_level] || 2;
+        return sum + difficultyScore;
+    }, 0) / enhancedBlogIdeas.length : 2;
+
+    // ROI Calculations
+    const estimatedContentCost = Math.round(totalWordCount * 0.08 + (enhancedBlogIdeas.length * 150)); // $0.08/word + $150 overhead per idea
+    const estimatedTrafficValue = (blogIdeasSummary?.seoOptimizedIdeas || 0) * 1800 + (blogIdeasSummary?.viralPotentialIdeas || 0) * 2200;
+    const estimatedRevenue = Math.round(estimatedTrafficValue * 0.85); // 85% of traffic value
+    const projectedROI = estimatedContentCost > 0 ? Math.round(((estimatedRevenue - estimatedContentCost) / estimatedContentCost) * 100) : 0;
+
+    // Success probability calculation
+    const qualityFactor = (blogIdeasSummary?.avgQualityScore || 0) * 0.4;
+    const selectionFactor = enhancedBlogIdeas.length > 0 ? (selectedIdeas.length / enhancedBlogIdeas.length) * 20 : 0;
+    const diversityFactor = Object.keys(blogIdeasSummary?.formatDistribution || {}).length * 5;
+    const overallSuccessProbability = Math.min(Math.round(qualityFactor + selectionFactor + diversityFactor + 20), 95);
+
+    // ====================================================================
+    // CORE OUTPUTS - Enhanced Financial Projections
+    // ====================================================================
+
+    // Enhanced Financial Projections
+    Outputs.ROIProjections = {
+        projectedROI: Math.max(projectedROI, 0),
+        estimatedRevenue: estimatedRevenue,
+        contentInvestment: estimatedContentCost,
+        breakEvenMonths: projectedROI > 0 ? Math.min(Math.ceil(1200 / projectedROI), 12) : 12,
+        monthlyTrafficIncrease: enhancedBlogIdeas.length * 1200 + (blogIdeasSummary?.viralPotentialIdeas || 0) * 800,
+        qualifiedLeads: selectedIdeas.length * 18 + (blogIdeasSummary?.highImpactIdeas || 0) * 12,
+        revenueBreakdown: {
+            organicTraffic: Math.round(estimatedRevenue * 0.6),
+            leadGeneration: Math.round(estimatedRevenue * 0.25),
+            brandAuthority: Math.round(estimatedRevenue * 0.15)
+        }
+    };
+
+    // Detailed Success Predictions
+    Outputs.DetailedSuccessPredictions = {
+        overallSuccessProbability: overallSuccessProbability,
+        trafficGrowthPercentage: Math.min((blogIdeasSummary?.seoOptimizedIdeas || 0) * 12 + 50, 300),
+        estimatedSocialShares: (blogIdeasSummary?.viralPotentialIdeas || 0) * 180 + enhancedBlogIdeas.length * 85,
+        timeToRankWeeks: (blogIdeasSummary?.avgQualityScore || 0) >= 80 ? "6-8" : 
+                        (blogIdeasSummary?.avgQualityScore || 0) >= 70 ? "8-10" : "10-14",
+        authorityBoostLevel: (blogIdeasSummary?.highImpactIdeas || 0) >= 5 ? "High" : 
+                            (blogIdeasSummary?.highImpactIdeas || 0) >= 3 ? "Medium" : "Low",
+        expectedBacklinks: enhancedBlogIdeas.length * 3.2 + (blogIdeasSummary?.viralPotentialIdeas || 0) * 4.8,
+        organicGrowthRate: Math.round((blogIdeasSummary?.avgQualityScore || 0) * 1.8 + 25)
+    };
+
+    // ====================================================================
+    // FORMATTED OUTPUTS FOR NOODL MOCKUP UI
+    // ====================================================================
+
+    // Status Cards for Header
+    Outputs.HeaderStatusCards = [
+        {
+            value: enhancedBlogIdeas.length,
+            displayValue: `${enhancedBlogIdeas.length}`,
+            label: "Ideas Generated",
+            color: "#3b82f6",
+            status: enhancedBlogIdeas.length >= 25 ? "Excellent" : enhancedBlogIdeas.length >= 15 ? "Good" : "Needs More",
+            icon: "💡",
+            changeIndicator: enhancedBlogIdeas.length >= 25 ? "strongly_rising" : "rising",
+            subtitle: enhancedBlogIdeas.length >= 25 ? "Comprehensive Set" : "Growing Collection"
+        },
+        {
+            value: Math.round(blogIdeasSummary?.avgQualityScore || 0),
+            displayValue: `${Math.round(blogIdeasSummary?.avgQualityScore || 0)}%`,
+            label: "Avg Quality Score",
+            color: (blogIdeasSummary?.avgQualityScore || 0) >= 80 ? "#10b981" : 
+                   (blogIdeasSummary?.avgQualityScore || 0) >= 70 ? "#f59e0b" : "#ef4444",
+            status: (blogIdeasSummary?.avgQualityScore || 0) >= 80 ? "Excellent" : 
+                    (blogIdeasSummary?.avgQualityScore || 0) >= 70 ? "Good" : "Needs Work",
+            icon: "⭐",
+            changeIndicator: (blogIdeasSummary?.avgQualityScore || 0) >= 80 ? "strongly_rising" : "stable",
+            subtitle: (blogIdeasSummary?.avgQualityScore || 0) >= 80 ? "High Quality" : "Above Average"
+        },
+        {
+            value: selectedIdeas.length,
+            displayValue: `${selectedIdeas.length}/${enhancedBlogIdeas.length}`,
+            label: "Selected Ideas",
+            color: selectedIdeas.length > 0 ? "#10b981" : "#6b7280",
+            status: selectedIdeas.length >= 5 ? "Ready" : selectedIdeas.length > 0 ? "In Progress" : "Not Started",
+            icon: "✅",
+            changeIndicator: selectedIdeas.length >= 5 ? "rising" : "stable",
+            subtitle: selectedIdeas.length >= 5 ? "Implementation Ready" : "Selection Needed"
+        },
+        {
+            value: Math.max(projectedROI, 0),
+            displayValue: `${Math.max(projectedROI, 0)}%`,
+            label: "Projected ROI",
+            color: projectedROI >= 200 ? "#10b981" : projectedROI >= 100 ? "#f59e0b" : "#ef4444",
+            status: projectedROI >= 200 ? "Excellent" : projectedROI >= 100 ? "Good" : "Moderate",
+            icon: "💰",
+            changeIndicator: projectedROI >= 200 ? "strongly_rising" : "rising",
+            subtitle: projectedROI >= 200 ? "High Return" : "Positive Outlook"
+        }
+    ];
+
+    // Blog Ideas Table Data
+    Outputs.BlogIdeasForTable = enhancedBlogIdeas.map((idea, index) => ({
+        id: idea.id,
+        rank: index + 1,
+        title: idea.title,
+        viralScore: idea.viral_potential_score || 0,
+        seoScore: idea.seo_optimization_score || 0,
+        qualityScore: idea.overall_quality_score || 0,
+        businessScore: idea.business_impact_score || 0,
+        keywordsPreview: idea.primaryKeywords ? idea.primaryKeywords.slice(0, 3).join(', ') : 'Keywords not available',
+        selected: idea.selected || false,
+        contentFormat: idea.content_format || 'how_to_guide',
+        formatDisplay: idea.formatDisplay || 'How To Guide',
+        formatIcon: idea.formatIcon || '📚',
+        difficultyLevel: idea.difficulty_level || 'intermediate',
+        difficultyDisplay: `${idea.difficultyInfo?.icon || '🟡'} ${(idea.difficulty_level || 'intermediate').charAt(0).toUpperCase() + (idea.difficulty_level || 'intermediate').slice(1)}`,
+        priorityLevel: idea.priority_level || 'medium',
+        priorityDisplay: idea.priorityInfo?.label || 'Medium Priority',
+        priorityColor: idea.priorityInfo?.color || '#f59e0b',
+        timeInvestment: idea.timeInvestment?.range || '3-5 hours',
+        estimatedWordCount: idea.estimated_word_count || 2500,
+        estimatedReadingTime: idea.estimated_reading_time || 12,
+        // For display formatting
+        qualityScoreDisplay: `${idea.qualityTier?.icon || '📝'} ${idea.overall_quality_score || 0}%`,
+        viralScoreDisplay: `${idea.viralInfo?.icon || '📊'} ${idea.viral_potential_score || 0}%`,
+        seoScoreDisplay: `${idea.seoInfo?.icon || '🚀'} ${idea.seo_optimization_score || 0}%`,
+        formatDisplayWithIcon: `${idea.formatIcon || '📚'} ${idea.formatDisplay || 'How To Guide'}`,
+        // Additional metadata for filtering/sorting
+        createdAt: idea.created_at || new Date().toISOString(),
+        updatedAt: idea.updated_at || new Date().toISOString()
+    }));
+
+    // Selection Summary
+    Outputs.SelectionSummary = {
+        selectedIdeas: selectedIdeas.length,
+        totalIdeas: enhancedBlogIdeas.length,
+        selectionProgress: enhancedBlogIdeas.length > 0 ? 
+            Math.round((selectedIdeas.length / enhancedBlogIdeas.length) * 100) : 0,
+        readyForImplementation: selectedIdeas.length > 0,
+        highQualitySelections: selectedIdeas.filter(idea => idea.overall_quality_score >= 80).length,
+        quickWinSelections: selectedIdeas.filter(idea => 
+            idea.difficulty_level === 'beginner' && idea.overall_quality_score >= 70
+        ).length,
+        averageQualityOfSelected: selectedIdeas.length > 0 ? 
+            Math.round(selectedIdeas.reduce((sum, idea) => sum + idea.overall_quality_score, 0) / selectedIdeas.length) : 0
+    };
+
+    // ============================================================================
+    // COMPREHENSIVE CHART OUTPUTS FOR NOODL CHARTS.JS PREFAB
+    // ============================================================================
+
+    // 1. QUALITY DISTRIBUTION CHART (Bar Chart) - FIXED
+    Outputs.QualityDistributionChart = {
+        labels: ["Excellent (85+)", "High (75-84)", "Good (65-74)", "Decent (55-64)", "Needs Work (<55)"],
+        datasets: [{
+            label: "Number of Ideas",
+            data: [
+                blogIdeasSummary?.qualityDistribution?.excellent || 0,
+                blogIdeasSummary?.qualityDistribution?.high || 0,
+                blogIdeasSummary?.qualityDistribution?.good || 0,
+                blogIdeasSummary?.qualityDistribution?.decent || 0,
+                blogIdeasSummary?.qualityDistribution?.needsWork || 0
+            ],
+            backgroundColor: [
+                "#10b981", // Green for Excellent
+                "#3b82f6", // Blue for High
+                "#f59e0b", // Yellow for Good
+                "#f97316", // Orange for Decent
+                "#ef4444"  // Red for Needs Work
+            ],
+            borderRadius: 6,
+            borderWidth: 0
+        }]
+    };
+
+    // 2. CONTENT FORMAT DISTRIBUTION CHART (Doughnut Chart) - FIXED
+    const formatDistribution = blogIdeasSummary?.formatDistribution || {};
+    const formatEntries = Object.entries(formatDistribution).sort((a, b) => b[1] - a[1]);
+
+    Outputs.FormatDistributionChart = {
+        labels: formatEntries.length > 0 ? 
+            formatEntries.map(([format]) => Phase2Utils.getFormatDisplay(format)) : 
+            ["No Data"],
+        datasets: [{
+            label: "Content Formats",
+            data: formatEntries.length > 0 ? 
+                formatEntries.map(([, count]) => count) : 
+                [1],
+            backgroundColor: formatEntries.length > 0 ? [
+                "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ef4444", 
+                "#84cc16", "#f97316", "#6366f1", "#ec4899", "#14b8a6"
+            ].slice(0, formatEntries.length) : ["#e5e7eb"],
+            borderWidth: 2,
+            borderColor: "#ffffff"
+        }]
+    };
+
+    // 3. SCORE COMPARISON CHART (Radar Chart) - FIXED
+    const avgScores = enhancedBlogIdeas.length > 0 ? {
+        quality: Math.round(enhancedBlogIdeas.reduce((sum, idea) => sum + (idea.overall_quality_score || 0), 0) / enhancedBlogIdeas.length),
+        viral: Math.round(enhancedBlogIdeas.reduce((sum, idea) => sum + (idea.viral_potential_score || 0), 0) / enhancedBlogIdeas.length),
+        seo: Math.round(enhancedBlogIdeas.reduce((sum, idea) => sum + (idea.seo_optimization_score || 0), 0) / enhancedBlogIdeas.length),
+        business: Math.round(enhancedBlogIdeas.reduce((sum, idea) => sum + (idea.business_impact_score || 0), 0) / enhancedBlogIdeas.length)
+    } : { quality: 0, viral: 0, seo: 0, business: 0 };
+
+    Outputs.ScoreComparisonChart = {
+        labels: ["Quality Score", "Viral Potential", "SEO Score", "Business Impact"],
+        datasets: [{
+            label: "Average Scores",
+            data: [avgScores.quality, avgScores.viral, avgScores.seo, avgScores.business],
+            backgroundColor: "rgba(59, 130, 246, 0.2)",
+            borderColor: "#3b82f6",
+            borderWidth: 2,
+            pointBackgroundColor: "#3b82f6",
+            pointBorderColor: "#ffffff",
+            pointRadius: 6
+        }]
+    };
+
+    // 4. PRIORITY DISTRIBUTION CHART (Horizontal Bar Chart) - FIXED
+    const priorityDistribution = blogIdeasSummary?.priorityDistribution || { high: 0, medium: 0, low: 0 };
+    const hasPriorityData = (priorityDistribution.high + priorityDistribution.medium + priorityDistribution.low) > 0;
+
+    Outputs.PriorityDistributionChart = {
+        labels: hasPriorityData ? 
+            ["High Priority", "Medium Priority", "Low Priority"] : 
+            ["No Priority Data"],
+        datasets: [{
+            label: "Priority Levels",
+            data: hasPriorityData ? 
+                [priorityDistribution.high, priorityDistribution.medium, priorityDistribution.low] : 
+                [1],
+            backgroundColor: hasPriorityData ? 
+                ["#ef4444", "#f59e0b", "#10b981"] : 
+                ["#e5e7eb"],
+            borderRadius: 4,
+            borderWidth: 0
+        }]
+    };
+
+    // 5. DIFFICULTY DISTRIBUTION CHART (Pie Chart) - FIXED
+    const difficultyCount = enhancedBlogIdeas.reduce((acc, idea) => {
+        const difficulty = idea.difficulty_level || 'intermediate';
+        acc[difficulty] = (acc[difficulty] || 0) + 1;
+        return acc;
+    }, {});
+
+    const difficultyLevels = ['beginner', 'intermediate', 'advanced', 'expert'];
+    const difficultyData = difficultyLevels.map(level => difficultyCount[level] || 0);
+    const hasDifficultyData = difficultyData.some(count => count > 0);
+
+    Outputs.DifficultyDistributionChart = {
+        labels: hasDifficultyData ? 
+            ["Beginner", "Intermediate", "Advanced", "Expert"] : 
+            ["No Difficulty Data"],
+        datasets: [{
+            label: "Difficulty Levels",
+            data: hasDifficultyData ? 
+                difficultyData : 
+                [1],
+            backgroundColor: hasDifficultyData ? 
+                ["#10b981", "#f59e0b", "#f97316", "#ef4444"] : 
+                ["#e5e7eb"],
+            borderWidth: 2,
+            borderColor: "#ffffff"
+        }]
+    };
+
+    // 6. WEEKLY PUBLICATION TIMELINE CHART (Line Chart) - FIXED
+    if (selectedIdeas.length > 0) {
+        const weeklySchedule = selectedIdeas.reduce((acc, idea, index) => {
+            const week = Math.floor(index / 2.5) + 1; // 2.5 posts per week
+            acc[week] = (acc[week] || 0) + 1;
+            return acc;
+        }, {});
+
+        const maxWeek = Math.max(...Object.keys(weeklySchedule).map(Number));
+        const weeks = Array.from({ length: maxWeek }, (_, i) => i + 1);
+
+        Outputs.WeeklyTimelineChart = {
+            labels: weeks.map(week => `Week ${week}`),
+            datasets: [{
+                label: "Posts Scheduled",
+                data: weeks.map(week => weeklySchedule[week] || 0),
+                backgroundColor: "rgba(16, 185, 129, 0.2)",
+                borderColor: "#10b981",
+                borderWidth: 3,
+                fill: true,
+                tension: 0.4,
+                pointBackgroundColor: "#10b981",
+                pointRadius: 5
+            }]
+        };
+    } else {
+        // Empty state for weekly timeline
+        Outputs.WeeklyTimelineChart = {
+            labels: ["Week 1", "Week 2", "Week 3", "Week 4"],
+            datasets: [{
+                label: "No Posts Scheduled",
+                data: [0, 0, 0, 0],
+                backgroundColor: "rgba(229, 231, 235, 0.2)",
+                borderColor: "#e5e7eb",
+                borderWidth: 2,
+                fill: true,
+                tension: 0.4,
+                pointBackgroundColor: "#e5e7eb",
+                pointRadius: 3
+            }]
+        };
+    }
+
+    // 7. ROI PROJECTION CHART (Bar Chart) - FIXED
+    Outputs.ROIProjectionChart = {
+        labels: ["Content Investment", "Expected Revenue", "Net Profit"],
+        datasets: [{
+            label: "Financial Projections ($)",
+            data: [
+                estimatedContentCost || 0,
+                estimatedRevenue || 0,
+                Math.max((estimatedRevenue || 0) - (estimatedContentCost || 0), 0)
+            ],
+            backgroundColor: ["#ef4444", "#3b82f6", "#10b981"],
+            borderRadius: 6,
+            borderWidth: 0
+        }]
+    };
+
+    // 8. TOP IDEAS PERFORMANCE CHART (Horizontal Bar Chart) - FIXED
+    const topIdeas = enhancedBlogIdeas
+        .sort((a, b) => (b.overall_quality_score || 0) - (a.overall_quality_score || 0))
+        .slice(0, 8);
+
+    if (topIdeas.length > 0) {
+        Outputs.TopIdeasChart = {
+            labels: topIdeas.map(idea => {
+                const title = idea.title || 'Untitled';
+                return title.length > 30 ? title.substring(0, 30) + '...' : title;
+            }),
+            datasets: [{
+                label: "Quality Score",
+                data: topIdeas.map(idea => idea.overall_quality_score || 0),
+                backgroundColor: topIdeas.map(idea => {
+                    const score = idea.overall_quality_score || 0;
+                    if (score >= 85) return "#10b981";
+                    if (score >= 75) return "#3b82f6";
+                    if (score >= 65) return "#f59e0b";
+                    return "#f97316";
+                }),
+                borderRadius: 4,
+                borderWidth: 0
+            }]
+        };
+    } else {
+        // Empty state for top ideas
+        Outputs.TopIdeasChart = {
+            labels: ["No Ideas Generated"],
+            datasets: [{
+                label: "No Data",
+                data: [0],
+                backgroundColor: ["#e5e7eb"],
+                borderRadius: 4,
+                borderWidth: 0
+            }]
+        };
+    }
+
+    // 9. SELECTED VS TOTAL IDEAS CHART (Pie Chart)
+    Outputs.SelectionProgressChart = {
+        labels: ["Selected Ideas", "Unselected Ideas"],
+        datasets: [{
+            label: "Selection Status",
+            data: [
+                selectedIdeas.length,
+                Math.max(enhancedBlogIdeas.length - selectedIdeas.length, 0)
+            ],
+            backgroundColor: ["#10b981", "#e5e7eb"],
+            borderWidth: 2,
+            borderColor: "#ffffff"
+        }]
+    };
+
+    // 10. SCORE DISTRIBUTION CHART (Multiple Metrics Bar Chart)
+    const scoreCategories = enhancedBlogIdeas.length > 0 ? {
+        excellent: enhancedBlogIdeas.filter(idea => (idea.overall_quality_score || 0) >= 85).length,
+        highViral: enhancedBlogIdeas.filter(idea => (idea.viral_potential_score || 0) >= 80).length,
+        seoOptimized: enhancedBlogIdeas.filter(idea => (idea.seo_optimization_score || 0) >= 80).length,
+        highBusiness: enhancedBlogIdeas.filter(idea => (idea.business_impact_score || 0) >= 80).length
+    } : { excellent: 0, highViral: 0, seoOptimized: 0, highBusiness: 0 };
+
+    Outputs.ScoreDistributionChart = {
+        labels: ["Excellent Quality", "High Viral", "SEO Optimized", "High Business Impact"],
+        datasets: [{
+            label: "High Scoring Ideas",
+            data: [
+                scoreCategories.excellent,
+                scoreCategories.highViral,
+                scoreCategories.seoOptimized,
+                scoreCategories.highBusiness
+            ],
+            backgroundColor: ["#10b981", "#ef4444", "#3b82f6", "#f59e0b"],
+            borderRadius: 6,
+            borderWidth: 0
+        }]
+    };
+
+    // 11. MONTHLY PUBLICATION SCHEDULE (if calendar exists)
+    if (selectedIdeas.length > 0) {
+        const monthlySchedule = Array.from({ length: 6 }, (_, monthIndex) => {
+            const month = new Date();
+            month.setMonth(month.getMonth() + monthIndex);
+            const monthName = month.toLocaleDateString('en-US', { month: 'short' });
+            
+            // Calculate posts per month (roughly 10 posts per month)
+            const postsThisMonth = selectedIdeas.filter((_, index) => {
+                const weekNumber = Math.floor(index / 2.5) + 1;
+                const monthFromWeek = Math.floor((weekNumber - 1) / 4);
+                return monthFromWeek === monthIndex;
+            }).length;
+            
+            return { month: monthName, posts: postsThisMonth };
+        });
+
+        Outputs.MonthlyScheduleChart = {
+            labels: monthlySchedule.map(item => item.month),
+            datasets: [{
+                label: "Posts Per Month",
+                data: monthlySchedule.map(item => item.posts),
+                backgroundColor: "rgba(16, 185, 129, 0.8)",
+                borderColor: "#10b981",
+                borderWidth: 2,
+                borderRadius: 4
+            }]
+        };
+    } else {
+        Outputs.MonthlyScheduleChart = {
+            labels: ["No Schedule"],
+            datasets: [{
+                label: "No Posts Scheduled",
+                data: [0],
+                backgroundColor: ["#e5e7eb"],
+                borderRadius: 4,
+                borderWidth: 0
+            }]
+        };
+    }
+
+    // 12. QUALITY VS DIFFICULTY SCATTER PLOT DATA (for advanced visualizations)
+    Outputs.QualityDifficultyScatterData = enhancedBlogIdeas.map(idea => ({
+        x: {
+            'beginner': 1,
+            'intermediate': 2,
+            'advanced': 3,
+            'expert': 4
+        }[idea.difficulty_level] || 2,
+        y: idea.overall_quality_score || 0,
+        title: idea.title || 'Untitled',
+        selected: idea.selected || false
+    }));
+
+    console.log("✅ All chart outputs generated with proper labels and fallback data!");
+
+    // ====================================================================
+    // COMPREHENSIVE TABLE OUTPUTS FOR NOODL TABLE PREFAB
+    // ====================================================================
+
+    // 1. MAIN BLOG IDEAS TABLE WITH FULL METADATA
+    Outputs.BlogIdeasTableData = enhancedBlogIdeas.map((idea, index) => ({
+        id: idea.id,
+        rank: index + 1,
+        title: idea.title,
+        contentFormat: idea.content_format,
+        formatDisplay: `${idea.formatIcon} ${idea.formatDisplay}`,
+        qualityScore: idea.overall_quality_score,
+        qualityDisplay: `${idea.qualityTier.icon} ${idea.overall_quality_score}%`,
+        viralScore: idea.viral_potential_score,
+        viralDisplay: `${idea.viralInfo.icon} ${idea.viral_potential_score}%`,
+        seoScore: idea.seo_optimization_score,
+        seoDisplay: `${idea.seoInfo.icon} ${idea.seo_optimization_score}%`,
+        businessScore: idea.business_impact_score,
+        difficultyLevel: idea.difficulty_level,
+        difficultyDisplay: `${idea.difficultyInfo.icon} ${idea.difficultyInfo.description}`,
+        timeInvestment: idea.timeInvestment.range,
+        estimatedWordCount: idea.estimated_word_count,
+        estimatedReadingTime: idea.estimated_reading_time,
+        priorityLevel: idea.priority_level || 'medium',
+        priorityDisplay: `${idea.priorityInfo.icon} ${idea.priorityInfo.label}`,
+        selected: idea.selected || false,
+        keywordsPreview: idea.keywordsDisplay,
+        created: idea.created_at || new Date().toISOString(),
+        updated: idea.updated_at || new Date().toISOString(),
+        // Additional fields for sorting/filtering
+        qualityTier: idea.qualityTier.tier,
+        formatCategory: idea.content_format,
+        selectionStatus: idea.selected ? 'Selected' : 'Not Selected'
+    }));
+
+    // 2. TABLE COLUMNS CONFIGURATION FOR NOODL TABLE PREFAB
+    Outputs.BlogIdeasTableColumns = [
+        { id: 'selected', Label: 'Select', Width: '5%', Field: 'selected', Editable: true, Type: "Boolean" },
+        { id: 'rank', Label: '#', Width: '5%', Field: 'rank', Sortable: true, Type: "Number" },
+        { id: 'title', Label: 'Blog Idea', Width: '25%', Field: 'title', Sortable: true, Searchable: true, Type: "String" },
+        { id: 'formatDisplay', Label: 'Format', Width: '12%', Field: 'formatDisplay', Filterable: true, FilterField: 'contentFormat', Type: "String" },
+        { id: 'qualityDisplay', Label: 'Quality', Width: '12%', Field: 'qualityDisplay', Sortable: true, SortField: 'qualityScore', Type: "String" },
+        { id: 'difficultyDisplay', Label: 'Difficulty', Width: '12%', Field: 'difficultyDisplay', Filterable: true, FilterField: 'difficultyLevel', Type: "String" },
+        { id: 'viralDisplay', Label: 'Viral', Width: '10%', Field: 'viralDisplay', Sortable: true, SortField: 'viralScore', Type: "String" },
+        { id: 'seoDisplay', Label: 'SEO', Width: '10%', Field: 'seoDisplay', Sortable: true, SortField: 'seoScore', Type: "String" },
+        { id: 'timeInvestment', Label: 'Time', Width: '9%', Field: 'timeInvestment', Type: "String" }
+    ];
+
+    // 3. SELECTED IDEAS SUMMARY TABLE
+    Outputs.SelectedIdeasTableData = selectedIdeas.map((idea, index) => ({
+        id: idea.id,
+        order: index + 1,
+        title: idea.title,
+        formatIcon: idea.formatIcon,
+        formatDisplay: idea.formatDisplay,
+        qualityScore: idea.overall_quality_score,
+        priority: idea.priority_level || 'medium',
+        priorityColor: idea.priorityInfo.color,
+        timeInvestment: idea.timeInvestment.range,
+        estimatedWeek: Math.floor(index / 2.5) + 1,
+        status: 'Ready',
+        estimatedHours: Math.ceil((idea.estimated_word_count || 2500) / 500) * 1.3
+    }));
+
+    // 4. CONTENT CALENDAR TABLE - ENHANCED TO USE EXISTING CALENDAR DATA
+    if (selectedIdeas.length > 0) {
+        // Generate from selected ideas (original logic)
+        Outputs.ContentCalendarTableData = selectedIdeas
+            .sort((a, b) => {
+                const priorityOrder = { high: 3, medium: 2, low: 1 };
+                const priorityA = priorityOrder[a.priority_level] || 2;
+                const priorityB = priorityOrder[b.priority_level] || 2;
+                if (priorityA !== priorityB) return priorityB - priorityA;
+                return (b.overall_quality_score || 0) - (a.overall_quality_score || 0);
+            })
+            .map((idea, index) => ({
+                id: idea.id,
+                week: Math.floor(index / 2.5) + 1,
+                weekDisplay: `Week ${Math.floor(index / 2.5) + 1}`,
+                title: idea.title,
+                format: `${idea.formatIcon} ${idea.formatDisplay}`,
+                formatIcon: idea.formatIcon,
+                formatDisplay: idea.formatDisplay,
+                priority: idea.priority_level || 'medium',
+                priorityDisplay: `${idea.priorityInfo.icon} ${idea.priority_level || 'medium'}`,
+                priorityColor: idea.priorityInfo.color,
+                qualityScore: idea.overall_quality_score,
+                qualityDisplay: `${idea.qualityTier.icon} ${idea.overall_quality_score}%`,
+                timeEstimate: idea.timeInvestment.range,
+                estimatedHours: Math.ceil((idea.estimated_word_count || 2500) / 500) * 1.3,
+                wordCount: idea.estimated_word_count,
+                readingTime: idea.estimated_reading_time,
+                status: 'Planned',
+                statusColor: '#f59e0b',
+                viralPotential: idea.viral_potential_score,
+                seoScore: idea.seo_optimization_score,
+                businessImpact: idea.business_impact_score,
+                difficultyLevel: idea.difficulty_level,
+                difficultyDisplay: `${idea.difficultyInfo.icon} ${idea.difficulty_level}`,
+                notes: (idea.viral_potential_score || 0) >= 80 ? 'High viral potential - rush for timing' : 
+                       (idea.seo_optimization_score || 0) >= 85 ? 'SEO optimized - target featured snippets' : 
+                       (idea.business_impact_score || 0) >= 80 ? 'High business impact - prioritize' : 'Standard content',
+                publishDate: idea.scheduled_publish_date || null,
+                dependencies: index > 0 ? [`Week ${Math.floor((index - 1) / 2.5) + 1} content`] : [],
+                estimatedStartDate: (() => {
+                    const startWeek = Math.floor(index / 2.5) + 1;
+                    const startDate = new Date();
+                    startDate.setDate(startDate.getDate() + (startWeek - 1) * 7);
+                    return startDate.toISOString().split('T')[0];
+                })(),
+                estimatedEndDate: (() => {
+                    const endWeek = Math.floor(index / 2.5) + 1;
+                    const endDate = new Date();
+                    endDate.setDate(endDate.getDate() + (endWeek - 1) * 7 + 5); // +5 days for completion
+                    return endDate.toISOString().split('T')[0];
+                })(),
+                resourcesNeeded: idea.estimated_word_count > 3000 ? 'Writer + Editor + Designer' : 
+                               idea.difficulty_level === 'expert' ? 'Senior Writer + Editor' : 
+                               'Writer + Editor',
+                keywordsPreview: idea.keywordsDisplay,
+                outlinePreview: idea.outlineArray?.slice(0, 2).join(', ') || 'Outline available'
+            }));
+    } else if (contentCalendar && enhancedBlogIdeas.length > 0) {
+        // Generate calendar table from all ideas using ContentCalendar strategy when no selections made
+        console.log("📅 Generating calendar table from ContentCalendar strategy...");
+        
+        try {
+            // Parse priority scheduling from ContentCalendar
+            const priorityScheduling = typeof contentCalendar.priority_scheduling === 'string' ? 
+                JSON.parse(contentCalendar.priority_scheduling) : contentCalendar.priority_scheduling;
+            
+            // Get immediate priority ideas
+            const immediatePriorityTitles = priorityScheduling?.immediate_priority_ideas || [];
+            const quickWinTitles = priorityScheduling?.quick_win_ideas || [];
+            const longTermTitles = priorityScheduling?.long_term_ideas || [];
+            
+            // Create a comprehensive calendar from all ideas, prioritized by ContentCalendar strategy
+            let calendarIdeas = [...enhancedBlogIdeas];
+            
+            // Sort ideas based on ContentCalendar priority strategy
+            calendarIdeas.sort((a, b) => {
+                // Check priority categories
+                const aIsImmediate = immediatePriorityTitles.includes(a.title);
+                const bIsImmediate = immediatePriorityTitles.includes(b.title);
+                const aIsQuickWin = quickWinTitles.includes(a.title);
+                const bIsQuickWin = quickWinTitles.includes(b.title);
+                
+                if (aIsImmediate && !bIsImmediate) return -1;
+                if (!aIsImmediate && bIsImmediate) return 1;
+                if (aIsQuickWin && !bIsQuickWin) return -1;
+                if (!aIsQuickWin && bIsQuickWin) return 1;
+                
+                // Then sort by quality score
+                return (b.overall_quality_score || 0) - (a.overall_quality_score || 0);
+            });
+            
+            Outputs.ContentCalendarTableData = calendarIdeas.map((idea, index) => {
+                // Determine priority and status based on ContentCalendar strategy
+                const isImmediate = immediatePriorityTitles.includes(idea.title);
+                const isQuickWin = quickWinTitles.includes(idea.title);
+                const isLongTerm = longTermTitles.includes(idea.title);
+                
+                let calendarPriority = 'medium';
+                let calendarStatus = 'Planned';
+                let calendarNotes = 'Standard content';
+                
+                if (isImmediate) {
+                    calendarPriority = 'high';
+                    calendarStatus = 'Priority';
+                    calendarNotes = 'Immediate priority - start first';
+                } else if (isQuickWin) {
+                    calendarPriority = 'medium';
+                    calendarStatus = 'Quick Win';
+                    calendarNotes = 'Quick win opportunity - easy implementation';
+                } else if (isLongTerm) {
+                    calendarPriority = 'low';
+                    calendarStatus = 'Long-term';
+                    calendarNotes = 'Long-term strategy content';
+                } else {
+                    // Determine based on content characteristics
+                    if ((idea.viral_potential_score || 0) >= 80) {
+                        calendarNotes = 'High viral potential - optimize timing';
+                    } else if ((idea.seo_optimization_score || 0) >= 85) {
+                        calendarNotes = 'SEO optimized - target featured snippets';
+                    } else if ((idea.business_impact_score || 0) >= 80) {
+                        calendarNotes = 'High business impact content';
+                    }
+                }
+                
+                return {
+                    id: idea.id,
+                    week: Math.floor(index / 2.5) + 1,
+                    weekDisplay: `Week ${Math.floor(index / 2.5) + 1}`,
+                    title: idea.title,
+                    format: `${idea.formatIcon} ${idea.formatDisplay}`,
+                    formatIcon: idea.formatIcon,
+                    formatDisplay: idea.formatDisplay,
+                    priority: calendarPriority,
+                    priorityDisplay: `${calendarPriority === 'high' ? '🔴' : calendarPriority === 'medium' ? '🟡' : '🟢'} ${calendarPriority}`,
+                    priorityColor: calendarPriority === 'high' ? '#ef4444' : calendarPriority === 'medium' ? '#f59e0b' : '#10b981',
+                    qualityScore: idea.overall_quality_score,
+                    qualityDisplay: `${idea.qualityTier.icon} ${idea.overall_quality_score}%`,
+                    timeEstimate: idea.timeInvestment.range,
+                    estimatedHours: Math.ceil((idea.estimated_word_count || 2500) / 500) * 1.3,
+                    wordCount: idea.estimated_word_count,
+                    readingTime: idea.estimated_reading_time,
+                    status: calendarStatus,
+                    statusColor: calendarStatus === 'Priority' ? '#ef4444' : 
+                                calendarStatus === 'Quick Win' ? '#10b981' : '#f59e0b',
+                    viralPotential: idea.viral_potential_score,
+                    seoScore: idea.seo_optimization_score,
+                    businessImpact: idea.business_impact_score,
+                    difficultyLevel: idea.difficulty_level,
+                    difficultyDisplay: `${idea.difficultyInfo.icon} ${idea.difficulty_level}`,
+                    notes: calendarNotes,
+                    publishDate: null,
+                    selected: idea.selected || false,
+                    estimatedStartDate: (() => {
+                        const startWeek = Math.floor(index / 2.5) + 1;
+                        const startDate = new Date();
+                        startDate.setDate(startDate.getDate() + (startWeek - 1) * 7);
+                        return startDate.toISOString().split('T')[0];
+                    })(),
+                    estimatedEndDate: (() => {
+                        const endWeek = Math.floor(index / 2.5) + 1;
+                        const endDate = new Date();
+                        endDate.setDate(endDate.getDate() + (endWeek - 1) * 7 + 5);
+                        return endDate.toISOString().split('T')[0];
+                    })(),
+                    resourcesNeeded: idea.estimated_word_count > 3000 ? 'Writer + Editor + Designer' : 
+                                   idea.difficulty_level === 'expert' ? 'Senior Writer + Editor' : 
+                                   'Writer + Editor',
+                    keywordsPreview: idea.keywordsDisplay,
+                    outlinePreview: idea.outlineArray?.slice(0, 2).join(', ') || 'Outline available',
+                    contentPillar: isImmediate ? 'Foundation' : isQuickWin ? 'Quick Wins' : isLongTerm ? 'Authority Building' : 'Standard Content'
+                };
+            });
+            
+            console.log(`✅ Generated calendar table with ${Outputs.ContentCalendarTableData.length} entries from ContentCalendar strategy`);
+            
+        } catch (parseError) {
+            console.warn("⚠️ Error parsing ContentCalendar data, falling back to simple calendar generation:", parseError);
+            
+            // Fallback: Create simple calendar from top ideas
+            Outputs.ContentCalendarTableData = enhancedBlogIdeas
+                .sort((a, b) => (b.overall_quality_score || 0) - (a.overall_quality_score || 0))
+                .map((idea, index) => ({
+                    id: idea.id,
+                    week: Math.floor(index / 2.5) + 1,
+                    weekDisplay: `Week ${Math.floor(index / 2.5) + 1}`,
+                    title: idea.title,
+                    format: `${idea.formatIcon} ${idea.formatDisplay}`,
+                    formatIcon: idea.formatIcon,
+                    formatDisplay: idea.formatDisplay,
+                    priority: 'medium',
+                    priorityDisplay: '🟡 medium',
+                    priorityColor: '#f59e0b',
+                    qualityScore: idea.overall_quality_score,
+                    qualityDisplay: `${idea.qualityTier.icon} ${idea.overall_quality_score}%`,
+                    timeEstimate: idea.timeInvestment.range,
+                    estimatedHours: Math.ceil((idea.estimated_word_count || 2500) / 500) * 1.3,
+                    status: 'Planned',
+                    statusColor: '#f59e0b',
+                    notes: (idea.viral_potential_score || 0) >= 80 ? 'High viral potential' : 
+                           (idea.seo_optimization_score || 0) >= 85 ? 'SEO optimized' : 'Standard content',
+                    selected: idea.selected || false,
+                    keywordsPreview: idea.keywordsDisplay
+                }));
+        }
+    } else {
+        // No ideas or calendar available
+        Outputs.ContentCalendarTableData = [];
+    }
+
+    // 5. CONTENT CALENDAR TABLE LABELS - FIXED FORMAT FOR NOODL TABLE PREFAB
+    Outputs.ContentCalendarTableLabels = [
+        {
+            id: "week",
+            Label: "Week",
+            Width: "8%",
+            Field: "week",
+            Editable: false,
+            Type: "String"
+        },
+        {
+            id: "title",
+            Label: "Blog Title",
+            Width: "30%",
+            Field: "title",
+            Editable: false,
+            Type: "String"
+        },
+        {
+            id: "format",
+            Label: "Content Format",
+            Width: "15%",
+            Field: "format",
+            Editable: false,
+            Type: "String"
+        },
+        {
+            id: "priority",
+            Label: "Priority Level",
+            Width: "12%",
+            Field: "priority",
+            Editable: false,
+            Type: "String"
+        },
+        {
+            id: "qualityScore",
+            Label: "Quality Score",
+            Width: "10%",
+            Field: "qualityScore",
+            Editable: false,
+            Type: "Number"
+        },
+        {
+            id: "timeEstimate",
+            Label: "Time Estimate",
+            Width: "10%",
+            Field: "timeEstimate",
+            Editable: false,
+            Type: "String"
+        },
+        {
+            id: "status",
+            Label: "Status",
+            Width: "8%",
+            Field: "status",
+            Editable: false,
+            Type: "String"
+        },
+        {
+            id: "notes",
+            Label: "Publishing Notes",
+            Width: "17%",
+            Field: "notes",
+            Editable: true,
+            Type: "String"
+        }
+    ];
+
+    // 6. CONTENT CALENDAR TABLE COLUMNS CONFIGURATION - SIMPLIFIED
+    Outputs.ContentCalendarTableColumns = [
+        { id: 'week', Label: 'Week', Width: '8%', Field: 'week', Sortable: true, Type: "String" },
+        { id: 'title', Label: 'Blog Title', Width: '30%', Field: 'title', Sortable: true, Searchable: true, Type: "String" },
+        { id: 'format', Label: 'Content Format', Width: '15%', Field: 'format', Filterable: true, Type: "String" },
+        { id: 'priority', Label: 'Priority Level', Width: '12%', Field: 'priority', Sortable: true, Filterable: true, Type: "String" },
+        { id: 'qualityScore', Label: 'Quality Score', Width: '10%', Field: 'qualityScore', Sortable: true, Type: "Number" },
+        { id: 'timeEstimate', Label: 'Time Estimate', Width: '10%', Field: 'timeEstimate', Type: "String" },
+        { id: 'status', Label: 'Status', Width: '8%', Field: 'status', Filterable: true, Type: "String" },
+        { id: 'notes', Label: 'Publishing Notes', Width: '17%', Field: 'notes', Type: "String" }
+    ];
+
+    // 7. SIMPLIFIED CONTENT CALENDAR TABLE DATA - ALIGNED WITH LABELS
+    if (selectedIdeas.length > 0) {
+        // Generate from selected ideas (original logic)
+        Outputs.ContentCalendarTableData = selectedIdeas
+            .sort((a, b) => {
+                const priorityOrder = { high: 3, medium: 2, low: 1 };
+                const priorityA = priorityOrder[a.priority_level] || 2;
+                const priorityB = priorityOrder[b.priority_level] || 2;
+                if (priorityA !== priorityB) return priorityB - priorityA;
+                return (b.overall_quality_score || 0) - (a.overall_quality_score || 0);
+            })
+            .map((idea, index) => ({
+                week: `Week ${Math.floor(index / 2.5) + 1}`,
+                title: idea.title,
+                format: `${idea.formatIcon} ${idea.formatDisplay}`,
+                priority: `${idea.priorityInfo.icon} ${idea.priority_level || 'medium'}`,
+                qualityScore: idea.overall_quality_score,
+                timeEstimate: idea.timeInvestment.range,
+                status: 'Planned',
+                notes: (idea.viral_potential_score || 0) >= 80 ? 'High viral potential - rush for timing' : 
+                       (idea.seo_optimization_score || 0) >= 85 ? 'SEO optimized - target featured snippets' : 
+                       (idea.business_impact_score || 0) >= 80 ? 'High business impact - prioritize' : 'Standard content'
+            }));
+    } else if (contentCalendar && enhancedBlogIdeas.length > 0) {
+        // Generate calendar table from all ideas using ContentCalendar strategy when no selections made
+        console.log("📅 Generating simplified calendar table from ContentCalendar strategy...");
+        
+        try {
+            // Parse priority scheduling from ContentCalendar
+            const priorityScheduling = typeof contentCalendar.priority_scheduling === 'string' ? 
+                JSON.parse(contentCalendar.priority_scheduling) : contentCalendar.priority_scheduling;
+            
+            // Get immediate priority ideas
+            const immediatePriorityTitles = priorityScheduling?.immediate_priority_ideas || [];
+            const quickWinTitles = priorityScheduling?.quick_win_ideas || [];
+            const longTermTitles = priorityScheduling?.long_term_ideas || [];
+            
+            // Create a comprehensive calendar from all ideas, prioritized by ContentCalendar strategy
+            let calendarIdeas = [...enhancedBlogIdeas];
+            
+            // Sort ideas based on ContentCalendar priority strategy
+            calendarIdeas.sort((a, b) => {
+                // Check priority categories
+                const aIsImmediate = immediatePriorityTitles.includes(a.title);
+                const bIsImmediate = immediatePriorityTitles.includes(b.title);
+                const aIsQuickWin = quickWinTitles.includes(a.title);
+                const bIsQuickWin = quickWinTitles.includes(b.title);
+                
+                if (aIsImmediate && !bIsImmediate) return -1;
+                if (!aIsImmediate && bIsImmediate) return 1;
+                if (aIsQuickWin && !bIsQuickWin) return -1;
+                if (!aIsQuickWin && bIsQuickWin) return 1;
+                
+                // Then sort by quality score
+                return (b.overall_quality_score || 0) - (a.overall_quality_score || 0);
+            });
+            
+            Outputs.ContentCalendarTableData = calendarIdeas.map((idea, index) => {
+                // Determine priority and status based on ContentCalendar strategy
+                const isImmediate = immediatePriorityTitles.includes(idea.title);
+                const isQuickWin = quickWinTitles.includes(idea.title);
+                const isLongTerm = longTermTitles.includes(idea.title);
+                
+                let calendarPriority = 'Medium';
+                let calendarStatus = 'Planned';
+                let calendarNotes = 'Standard content';
+                let priorityIcon = '🟡';
+                
+                if (isImmediate) {
+                    calendarPriority = 'High';
+                    calendarStatus = 'Priority';
+                    calendarNotes = 'Immediate priority - start first';
+                    priorityIcon = '🔴';
+                } else if (isQuickWin) {
+                    calendarPriority = 'Medium';
+                    calendarStatus = 'Quick Win';
+                    calendarNotes = 'Quick win opportunity - easy implementation';
+                    priorityIcon = '🟡';
+                } else if (isLongTerm) {
+                    calendarPriority = 'Low';
+                    calendarStatus = 'Long-term';
+                    calendarNotes = 'Long-term strategy content';
+                    priorityIcon = '🟢';
+                } else {
+                    // Determine based on content characteristics
+                    if ((idea.viral_potential_score || 0) >= 80) {
+                        calendarNotes = 'High viral potential - optimize timing';
+                    } else if ((idea.seo_optimization_score || 0) >= 85) {
+                        calendarNotes = 'SEO optimized - target featured snippets';
+                    } else if ((idea.business_impact_score || 0) >= 80) {
+                        calendarNotes = 'High business impact content';
+                    }
+                }
+                
+                return {
+                    week: `Week ${Math.floor(index / 2.5) + 1}`,
+                    title: idea.title,
+                    format: `${idea.formatIcon} ${idea.formatDisplay}`,
+                    priority: `${priorityIcon} ${calendarPriority}`,
+                    qualityScore: idea.overall_quality_score,
+                    timeEstimate: idea.timeInvestment.range,
+                    status: calendarStatus,
+                    notes: calendarNotes
+                };
+            });
+            
+            console.log(`✅ Generated simplified calendar table with ${Outputs.ContentCalendarTableData.length} entries`);
+            
+        } catch (parseError) {
+            console.warn("⚠️ Error parsing ContentCalendar data, falling back to simple calendar generation:", parseError);
+            
+            // Fallback: Create simple calendar from top ideas
+            Outputs.ContentCalendarTableData = enhancedBlogIdeas
+                .sort((a, b) => (b.overall_quality_score || 0) - (a.overall_quality_score || 0))
+                .map((idea, index) => ({
+                    week: `Week ${Math.floor(index / 2.5) + 1}`,
+                    title: idea.title,
+                    format: `${idea.formatIcon} ${idea.formatDisplay}`,
+                    priority: '🟡 Medium',
+                    qualityScore: idea.overall_quality_score,
+                    timeEstimate: idea.timeInvestment.range,
+                    status: 'Planned',
+                    notes: (idea.viral_potential_score || 0) >= 80 ? 'High viral potential' : 
+                           (idea.seo_optimization_score || 0) >= 85 ? 'SEO optimized' : 'Standard content'
+                }));
+        }
+    } else {
+        // No ideas or calendar available
+        Outputs.ContentCalendarTableData = [];
+    }
+
+    // 5. QUALITY TIER BREAKDOWN TABLE
+    Outputs.QualityTierTableData = [
+        {
+            tier: 'Excellent',
+            scoreRange: '85-100%',
+            count: blogIdeasSummary?.qualityDistribution?.excellent || 0,
+            percentage: enhancedBlogIdeas.length > 0 ? 
+                Math.round(((blogIdeasSummary?.qualityDistribution?.excellent || 0) / enhancedBlogIdeas.length) * 100) : 0,
+            color: '#10b981',
+            icon: '🏆',
+            recommendation: 'Prioritize for immediate implementation'
+        },
+        {
+            tier: 'High Quality',
+            scoreRange: '75-84%',
+            count: blogIdeasSummary?.qualityDistribution?.high || 0,
+            percentage: enhancedBlogIdeas.length > 0 ? 
+                Math.round(((blogIdeasSummary?.qualityDistribution?.high || 0) / enhancedBlogIdeas.length) * 100) : 0,
+            color: '#3b82f6',
+            icon: '⭐',
+            recommendation: 'Strong candidates for content creation'
+        },
+        {
+            tier: 'Good',
+            scoreRange: '65-74%',
+            count: blogIdeasSummary?.qualityDistribution?.good || 0,
+            percentage: enhancedBlogIdeas.length > 0 ? 
+                Math.round(((blogIdeasSummary?.qualityDistribution?.good || 0) / enhancedBlogIdeas.length) * 100) : 0,
+            color: '#f59e0b',
+            icon: '✅',
+            recommendation: 'Consider with minor optimizations'
+        },
+        {
+            tier: 'Decent',
+            scoreRange: '55-64%',
+            count: blogIdeasSummary?.qualityDistribution?.decent || 0,
+            percentage: enhancedBlogIdeas.length > 0 ? 
+                Math.round(((blogIdeasSummary?.qualityDistribution?.decent || 0) / enhancedBlogIdeas.length) * 100) : 0,
+            color: '#f97316',
+            icon: '📝',
+            recommendation: 'Requires significant improvement'
+        },
+        {
+            tier: 'Needs Work',
+            scoreRange: '0-54%',
+            count: blogIdeasSummary?.qualityDistribution?.needsWork || 0,
+            percentage: enhancedBlogIdeas.length > 0 ? 
+                Math.round(((blogIdeasSummary?.qualityDistribution?.needsWork || 0) / enhancedBlogIdeas.length) * 100) : 0,
+            color: '#ef4444',
+            icon: '⚠️',
+            recommendation: 'Consider regenerating or skipping'
+        }
+    ];
+
+    // 6. PERFORMANCE METRICS TABLE
+    Outputs.PerformanceMetricsTableData = [
+        {
+            metric: 'Total Ideas Generated',
+            value: enhancedBlogIdeas.length,
+            target: '25-30',
+            status: enhancedBlogIdeas.length >= 25 ? 'Excellent' : enhancedBlogIdeas.length >= 15 ? 'Good' : 'Needs More',
+            icon: '💡'
+        },
+        {
+            metric: 'Average Quality Score',
+            value: `${Math.round(blogIdeasSummary?.avgQualityScore || 0)}%`,
+            target: '75%+',
+            status: (blogIdeasSummary?.avgQualityScore || 0) >= 75 ? 'Excellent' : 
+                    (blogIdeasSummary?.avgQualityScore || 0) >= 65 ? 'Good' : 'Needs Improvement',
+            icon: '⭐'
+        },
+        {
+            metric: 'Ideas Selected',
+            value: `${selectedIdeas.length}/${enhancedBlogIdeas.length}`,
+            target: '5-10',
+            status: selectedIdeas.length >= 5 ? 'Ready' : selectedIdeas.length > 0 ? 'In Progress' : 'Not Started',
+            icon: '✅'
+        },
+        {
+            metric: 'High Quality Ideas (80+)',
+            value: enhancedBlogIdeas.filter(idea => (idea.overall_quality_score || 0) >= 80).length,
+            target: '30%+',
+            status: enhancedBlogIdeas.length > 0 && 
+                    (enhancedBlogIdeas.filter(idea => (idea.overall_quality_score || 0) >= 80).length / enhancedBlogIdeas.length) >= 0.3 ? 
+                    'Excellent' : 'Improving',
+            icon: '🏆'
+        },
+        {
+            metric: 'Viral Potential Ideas (80+)',
+            value: blogIdeasSummary?.viralPotentialIdeas || 0,
+            target: '3+',
+            status: (blogIdeasSummary?.viralPotentialIdeas || 0) >= 3 ? 'Excellent' : 
+                    (blogIdeasSummary?.viralPotentialIdeas || 0) >= 1 ? 'Good' : 'Limited',
+            icon: '🔥'
+        },
+        {
+            metric: 'SEO Optimized Ideas (80+)',
+            value: blogIdeasSummary?.seoOptimizedIdeas || 0,
+            target: '5+',
+            status: (blogIdeasSummary?.seoOptimizedIdeas || 0) >= 5 ? 'Excellent' : 
+                    (blogIdeasSummary?.seoOptimizedIdeas || 0) >= 3 ? 'Good' : 'Needs Work',
+            icon: '🚀'
+        }
+    ];
+
+    // ====================================================================
+    // ENHANCED DASHBOARD CARDS AND COMPONENTS
+    // ====================================================================
+
+    // Overview Metric Cards (detailed format for dashboard)
+    Outputs.OverviewMetricCards = [
+        {
+            id: "generation_summary",
+            icon: "🎯",
+            title: "Generation Summary",
+            value: enhancedBlogIdeas.length,
+            displayValue: `${enhancedBlogIdeas.length}`,
+            subtitle: `Blog ideas generated`,
+            progressPercentage: Math.min((enhancedBlogIdeas.length / 30) * 100, 100),
+            progressLabel: `${Math.min(Math.round((enhancedBlogIdeas.length / 30) * 100), 100)}% of target`,
+            color: "#3b82f6",
+            status: "success"
+        },
+        {
+            id: "quality_distribution",
+            icon: "⭐",
+            title: "Quality Distribution",
+            value: Math.round(blogIdeasSummary?.avgQualityScore || 0),
+            displayValue: `${Math.round(blogIdeasSummary?.avgQualityScore || 0)}% avg`,
+            subtitle: "Average quality score",
+            qualityBreakdown: [
+                { tier: "Excellent", count: blogIdeasSummary?.qualityDistribution?.excellent || 0, color: "#10b981", height: ((blogIdeasSummary?.qualityDistribution?.excellent || 0) / Math.max(enhancedBlogIdeas.length, 1)) * 60 },
+                { tier: "High", count: blogIdeasSummary?.qualityDistribution?.high || 0, color: "#3b82f6", height: ((blogIdeasSummary?.qualityDistribution?.high || 0) / Math.max(enhancedBlogIdeas.length, 1)) * 60 },
+                { tier: "Good", count: blogIdeasSummary?.qualityDistribution?.good || 0, color: "#f59e0b", height: ((blogIdeasSummary?.qualityDistribution?.good || 0) / Math.max(enhancedBlogIdeas.length, 1)) * 60 },
+                { tier: "Decent", count: blogIdeasSummary?.qualityDistribution?.decent || 0, color: "#f97316", height: ((blogIdeasSummary?.qualityDistribution?.decent || 0) / Math.max(enhancedBlogIdeas.length, 1)) * 60 },
+                { tier: "Needs Work", count: blogIdeasSummary?.qualityDistribution?.needsWork || 0, color: "#ef4444", height: ((blogIdeasSummary?.qualityDistribution?.needsWork || 0) / Math.max(enhancedBlogIdeas.length, 1)) * 60 }
+            ],
+            color: "#10b981",
+            status: "info"
+        },
+        {
+            id: "selection_progress",
+            icon: "✅",
+            title: "Selection Progress",
+            value: selectedIdeas.length,
+            displayValue: `${selectedIdeas.length}/${enhancedBlogIdeas.length}`,
+            subtitle: "Ideas selected for implementation",
+            progressPercentage: enhancedBlogIdeas.length > 0 ? (selectedIdeas.length / enhancedBlogIdeas.length) * 100 : 0,
+            progressLabel: `${enhancedBlogIdeas.length > 0 ? Math.round((selectedIdeas.length / enhancedBlogIdeas.length) * 100) : 0}% selection rate`,
+            color: "#10b981",
+            status: selectedIdeas.length > 0 ? "success" : "warning"
+        },
+        {
+            id: "business_impact",
+            icon: "💰",
+            title: "Predicted ROI",
+            value: Math.max(projectedROI, 0),
+            displayValue: `${Math.max(projectedROI, 0)}%`,
+            subtitle: "Expected 12-month return on investment",
+            details: [
+                `• Estimated traffic: ${(enhancedBlogIdeas.length * 1200 + (blogIdeasSummary?.viralPotentialIdeas || 0) * 800).toLocaleString()} monthly visits`,
+                `• Lead generation: ${selectedIdeas.length * 18 + (blogIdeasSummary?.highImpactIdeas || 0) * 12} qualified leads`,
+                `• Content authority boost: ${(blogIdeasSummary?.highImpactIdeas || 0) >= 5 ? "High" : (blogIdeasSummary?.highImpactIdeas || 0) >= 3 ? "Medium" : "Low"}`
+            ],
+            color: "#10b981",
+            status: "success"
+        }
+    ];
+
+    // Top 5 Blog Ideas for Overview (simplified format)
+    Outputs.TopBlogIdeasForOverview = enhancedBlogIdeas
+        .sort((a, b) => (b.overall_quality_score || 0) - (a.overall_quality_score || 0))
+        .slice(0, 5)
+        .map((idea, index) => ({
+            id: idea.id,
+            rank: index + 1,
+            title: idea.title,
+            viralScore: idea.viral_potential_score || 0,
+            seoScore: idea.seo_optimization_score || 0,
+            qualityScore: idea.overall_quality_score || 0,
+            keywordsPreview: idea.primaryKeywords ? idea.primaryKeywords.slice(0, 3).join(', ') : 'Keywords not available',
+            selected: idea.selected || false,
+            formatIcon: idea.formatIcon || '📚',
+            formatDisplay: idea.formatDisplay || 'How To Guide',
+            timeInvestment: idea.timeInvestment?.range || '3-5 hours',
+            qualityTier: idea.qualityTier?.tier || 'Good',
+            qualityIcon: idea.qualityTier?.icon || '📝',
+            viralIcon: idea.viralInfo?.icon || '📊',
+            seoIcon: idea.seoInfo?.icon || '🚀'
+        }));
+
+    // Navigation Tabs with Dynamic Badges
+    Outputs.NavigationTabs = [
+        {
+            id: 'overview',
+            label: 'Overview',
+            icon: '📊',
+            active: currentView === 'overview',
+            badge: enhancedBlogIdeas.length > 0 ? `${enhancedBlogIdeas.length} ideas` : '',
+            badgeColor: '#3b82f6',
+            disabled: false
+        },
+        {
+            id: 'ideas',
+            label: 'Blog Ideas',
+            icon: '💡',
+            active: currentView === 'ideas',
+            badge: selectedIdeas.length > 0 ? `${selectedIdeas.length}/${enhancedBlogIdeas.length}` : `${enhancedBlogIdeas.length}`,
+            badgeColor: selectedIdeas.length > 0 ? '#10b981' : '#6b7280',
+            disabled: false
+        },
+        {
+            id: 'calendar',
+            label: 'Content Calendar',
+            icon: '📅',
+            active: currentView === 'calendar',
+            badge: contentCalendar ? 'Ready' : 'Generate',
+            badgeColor: contentCalendar ? '#10b981' : '#f59e0b',
+            disabled: !contentCalendar
+        },
+        {
+            id: 'insights',
+            label: 'Strategic Insights',
+            icon: '📈',
+            active: currentView === 'insights',
+            badge: strategicInsights ? 'Available' : 'Generate',
+            badgeColor: strategicInsights ? '#10b981' : '#f59e0b',
+            disabled: !strategicInsights
+        }
+    ];
+
+    // Quick Filters for Ideas Table
+    Outputs.QuickFiltersForTable = [
+        {
+            id: 'all',
+            label: 'All Ideas',
+            icon: '📝',
+            count: enhancedBlogIdeas.length,
+            active: !filterSettings.quickFilter || filterSettings.quickFilter === 'all',
+            color: '#6b7280'
+        },
+        {
+            id: 'high_quality',
+            label: 'High Quality (80+)',
+            icon: '⭐',
+            count: enhancedBlogIdeas.filter(idea => (idea.overall_quality_score || 0) >= 80).length,
+            active: filterSettings.quickFilter === 'high_quality',
+            color: '#10b981'
+        },
+        {
+            id: 'quick_wins',
+            label: 'Quick Wins',
+            icon: '⚡',
+            count: enhancedBlogIdeas.filter(idea => 
+                idea.difficulty_level === 'beginner' && (idea.overall_quality_score || 0) >= 70
+            ).length,
+            active: filterSettings.quickFilter === 'quick_wins',
+            color: '#f59e0b'
+        },
+        {
+            id: 'viral_potential',
+            label: 'Viral Potential (80+)',
+            icon: '🔥',
+            count: enhancedBlogIdeas.filter(idea => (idea.viral_potential_score || 0) >= 80).length,
+            active: filterSettings.quickFilter === 'viral_potential',
+            color: '#ef4444'
+        },
+        {
+            id: 'seo_optimized',
+            label: 'SEO Optimized (80+)',
+            icon: '🚀',
+            count: enhancedBlogIdeas.filter(idea => (idea.seo_optimization_score || 0) >= 80).length,
+            active: filterSettings.quickFilter === 'seo_optimized',
+            color: '#3b82f6'
+        },
+        {
+            id: 'selected',
+            label: 'Selected',
+            icon: '✅',
+            count: selectedIdeas.length,
+            active: filterSettings.quickFilter === 'selected',
+            color: '#10b981'
+        }
+    ];
+
+    // Bulk Actions for Table
+    Outputs.BulkActionsForTable = [
+        {
+            id: 'select_high_quality',
+            label: 'Select High Quality',
+            icon: '⭐',
+            count: enhancedBlogIdeas.filter(idea => (idea.overall_quality_score || 0) >= 80).length,
+            enabled: enhancedBlogIdeas.filter(idea => (idea.overall_quality_score || 0) >= 80).length > 0,
+            type: 'primary'
+        },
+        {
+            id: 'select_quick_wins',
+            label: 'Select Quick Wins',
+            icon: '⚡',
+            count: enhancedBlogIdeas.filter(idea => 
+                idea.difficulty_level === 'beginner' && (idea.overall_quality_score || 0) >= 70
+            ).length,
+            enabled: enhancedBlogIdeas.filter(idea => 
+                idea.difficulty_level === 'beginner' && (idea.overall_quality_score || 0) >= 70
+            ).length > 0,
+            type: 'secondary'
+        },
+        {
+            id: 'select_viral',
+            label: 'Select Viral Potential',
+            icon: '🔥',
+            count: enhancedBlogIdeas.filter(idea => (idea.viral_potential_score || 0) >= 80).length,
+            enabled: enhancedBlogIdeas.filter(idea => (idea.viral_potential_score || 0) >= 80).length > 0,
+            type: 'secondary'
+        },
+        {
+            id: 'select_all',
+            label: 'Select All',
+            icon: '📝',
+            count: enhancedBlogIdeas.length,
+            enabled: enhancedBlogIdeas.length > 0,
+            type: 'secondary'
+        },
+        {
+            id: 'clear_all',
+            label: 'Clear All',
+            icon: '🗑️',
+            count: selectedIdeas.length,
+            enabled: selectedIdeas.length > 0,
+            type: 'danger'
+        }
+    ];
+
+    // Content Calendar Timeline (for calendar tab)
+    if (currentView === "calendar" && selectedIdeas.length > 0) {
+        Outputs.ContentCalendarTimeline = selectedIdeas
+            .sort((a, b) => {
+                const priorityOrder = { high: 3, medium: 2, low: 1 };
+                const priorityA = priorityOrder[a.priority_level] || 2;
+                const priorityB = priorityOrder[b.priority_level] || 2;
+                if (priorityA !== priorityB) return priorityB - priorityA;
+                return (b.overall_quality_score || 0) - (a.overall_quality_score || 0);
+            })
+            .map((idea, index) => ({
+                id: idea.id,
+                rank: index + 1,
+                title: idea.title,
+                formatIcon: idea.formatIcon || '📚',
+                formatDisplay: idea.formatDisplay || 'How To Guide',
+                qualityScore: idea.overall_quality_score || 0,
+                priority: idea.priority_level || 'medium',
+                priorityIcon: idea.priorityInfo?.icon || '🟡',
+                priorityColor: idea.priorityInfo?.color || '#f59e0b',
+                timeInvestment: idea.timeInvestment?.range || '3-5 hours',
+                estimatedWeek: Math.floor(index / 2.5) + 1,
+                weekRange: `Week ${Math.floor(index / 2.5) + 1}`,
+                publishingNote: (idea.viral_potential_score || 0) >= 80 ? "Rush for viral timing" : 
+                               (idea.seo_optimization_score || 0) >= 85 ? "Optimize for featured snippets" : "Standard publishing"
+            }));
+    }
+
+    // Strategic Insights Cards (for insights tab)
+    Outputs.StrategicInsightsCards = [
+        {
+            id: 'success_predictions',
+            icon: '🎯',
+            title: 'Success Predictions',
+            mainValue: overallSuccessProbability,
+            mainValueDisplay: `${overallSuccessProbability}%`,
+            mainValueLabel: 'Overall Success Probability',
+            predictions: [
+                { label: 'Traffic Growth', value: `+${Math.min((blogIdeasSummary?.seoOptimizedIdeas || 0) * 12 + 50, 300)}%` },
+                { label: 'Lead Generation', value: `${selectedIdeas.length * 18 + (blogIdeasSummary?.highImpactIdeas || 0) * 12}+ qualified` },
+                { label: 'Social Shares', value: `${(blogIdeasSummary?.viralPotentialIdeas || 0) * 180 + enhancedBlogIdeas.length * 85} estimated` },
+                { label: 'Time to Rank', value: (blogIdeasSummary?.avgQualityScore || 0) >= 80 ? "6-8 weeks" : "8-12 weeks" }
+            ]
+        },
+        {
+            id: 'roi_analysis',
+            icon: '💰',
+            title: 'ROI Analysis',
+            predictions: [
+                { label: 'Content Investment', value: `${estimatedContentCost.toLocaleString()}` },
+                { label: 'Expected Revenue', value: `${estimatedRevenue.toLocaleString()}` },
+                { label: '12-Month ROI', value: `${Math.max(projectedROI, 0)}%`, highlight: true },
+                { label: 'Break-even Timeline', value: `${projectedROI > 0 ? Math.min(Math.ceil(1200 / projectedROI), 12) : 12} months` }
+            ],
+            status: projectedROI >= 200 ? 'success' : projectedROI >= 100 ? 'warning' : 'info',
+            statusMessage: projectedROI >= 200 ? 'Strong ROI potential with high-quality content mix' : 'Positive ROI expected'
+        },
+        {
+            id: 'quality_assessment',
+            icon: '⭐',
+            title: 'Quality Assessment',
+            predictions: [
+                { label: 'Average Quality Score', value: `${Math.round(blogIdeasSummary?.avgQualityScore || 0)}%` },
+                { label: 'Excellent Ideas (85+)', value: `${blogIdeasSummary?.qualityDistribution?.excellent || 0} out of ${enhancedBlogIdeas.length}` },
+                { label: 'High Quality (75+)', value: `${(blogIdeasSummary?.qualityDistribution?.excellent || 0) + (blogIdeasSummary?.qualityDistribution?.high || 0)} out of ${enhancedBlogIdeas.length}` },
+                { label: 'Implementation Ready', value: selectedIdeas.length > 0 ? '✅ Yes' : '⚠️ Select ideas' }
+            ],
+            additionalInfo: `${Math.round(((blogIdeasSummary?.qualityDistribution?.excellent || 0) + (blogIdeasSummary?.qualityDistribution?.high || 0)) / Math.max(enhancedBlogIdeas.length, 1) * 100)}% of ideas exceed industry quality benchmarks`
+        }
+    ];
+
+    // Phase 3 Readiness Assessment
+    Outputs.Phase3ReadinessCard = {
+        isReady: selectedIdeas.length > 0,
+        readinessScore: selectedIdeas.length > 0 ? Math.min(
+            (selectedIdeas.length / Math.max(enhancedBlogIdeas.length, 1)) * 30 +
+            (Outputs.SelectionSummary.averageQualityOfSelected / 100) * 40 +
+            (contentCalendar ? 15 : 0) +
+            (strategicInsights ? 15 : 0),
+            100
+        ) : 0,
+        readinessScoreDisplay: `${selectedIdeas.length > 0 ? Math.round(Math.min(
+            (selectedIdeas.length / Math.max(enhancedBlogIdeas.length, 1)) * 30 +
+            (Outputs.SelectionSummary.averageQualityOfSelected / 100) * 40 +
+            (contentCalendar ? 15 : 0) +
+            (strategicInsights ? 15 : 0),
+            100
+        )) : 0}%`,
+        status: selectedIdeas.length >= 5 ? 'ready' : selectedIdeas.length > 0 ? 'in_progress' : 'not_started',
+        statusDisplay: selectedIdeas.length >= 5 ? 'Ready for Implementation' : 
+                       selectedIdeas.length > 0 ? 'Selection in Progress' : 'Selection Required',
+        statusIcon: selectedIdeas.length >= 5 ? '✅' : selectedIdeas.length > 0 ? '⚠️' : '❌',
+        selectedCount: selectedIdeas.length,
+        averageQuality: Outputs.SelectionSummary.averageQualityOfSelected,
+        hasCalendar: !!contentCalendar,
+        hasInsights: !!strategicInsights,
+        optimizationSuggestions: [
+            selectedIdeas.length >= 5 ? "Perfect content mix with strong ROI potential" : "Select at least 5 high-quality ideas for optimal results",
+            selectedIdeas.filter(idea => !idea.priority_level || idea.priority_level === 'medium').length > 3 ? 
+                "Consider setting priority levels for remaining ideas" : "Priority levels well distributed",
+            contentCalendar ? "Content calendar shows optimal seasonal timing" : "Generate content calendar for better planning",
+            selectedIdeas.length <= 8 ? "Timeline is realistic for 2-3 posts per week schedule" : "Consider phased implementation for large content volume"
+        ]
+    };
+
+    // ====================================================================
+    // FILTER AND SORTING OPTIONS FOR TABLES
+    // ====================================================================
+
+    // Filter Options for Blog Ideas Table
+    Outputs.BlogIdeasTableFilters = {
+        contentFormat: {
+            label: 'Content Format',
+            options: ['All', ...Array.from(new Set(enhancedBlogIdeas.map(idea => idea.formatDisplay)))],
+            field: 'formatDisplay'
+        },
+        qualityTier: {
+            label: 'Quality Tier',
+            options: ['All', 'Excellent', 'High Quality', 'Good', 'Decent', 'Needs Work'],
+            field: 'qualityTier'
+        },
+        difficultyLevel: {
+            label: 'Difficulty',
+            options: ['All', 'Beginner', 'Intermediate', 'Advanced', 'Expert'],
+            field: 'difficultyLevel'
+        },
+        selectionStatus: {
+            label: 'Selection Status',
+            options: ['All', 'Selected', 'Not Selected'],
+            field: 'selectionStatus'
+        },
+        priorityLevel: {
+            label: 'Priority',
+            options: ['All', 'High', 'Medium', 'Low'],
+            field: 'priorityLevel'
+        }
+    };
+
+    // Sort Options for Blog Ideas Table
+    Outputs.BlogIdeasTableSortOptions = [
+        { label: 'Quality Score (High to Low)', field: 'qualityScore', order: 'desc' },
+        { label: 'Quality Score (Low to High)', field: 'qualityScore', order: 'asc' },
+        { label: 'Viral Potential (High to Low)', field: 'viralScore', order: 'desc' },
+        { label: 'SEO Score (High to Low)', field: 'seoScore', order: 'desc' },
+        { label: 'Title (A to Z)', field: 'title', order: 'asc' },
+        { label: 'Date Created (Newest)', field: 'created', order: 'desc' },
+        { label: 'Time Investment (Least to Most)', field: 'estimatedWordCount', order: 'asc' }
+    ];
+
+    // ====================================================================
+    // DASHBOARD SUMMARY CARDS DATA
+    // ====================================================================
+
+    Outputs.DashboardSummaryCards = [
+        {
+            title: 'Total Ideas',
+            value: enhancedBlogIdeas.length,
+            subtitle: 'Generated ideas',
+            icon: '💡',
+            color: '#3b82f6',
+            trend: enhancedBlogIdeas.length >= 25 ? 'up' : 'stable',
+            trendValue: enhancedBlogIdeas.length >= 25 ? '+Excellent' : 'Growing'
+        },
+        {
+            title: 'Avg Quality',
+            value: `${Math.round(blogIdeasSummary?.avgQualityScore || 0)}%`,
+            subtitle: 'Quality score',
+            icon: '⭐',
+            color: (blogIdeasSummary?.avgQualityScore || 0) >= 80 ? '#10b981' : '#f59e0b',
+            trend: (blogIdeasSummary?.avgQualityScore || 0) >= 75 ? 'up' : 'stable',
+            trendValue: (blogIdeasSummary?.avgQualityScore || 0) >= 80 ? 'Excellent' : 'Good'
+        },
+        {
+            title: 'Selected',
+            value: `${selectedIdeas.length}/${enhancedBlogIdeas.length}`,
+            subtitle: 'Ready for creation',
+            icon: '✅',
+            color: selectedIdeas.length > 0 ? '#10b981' : '#6b7280',
+            trend: selectedIdeas.length >= 5 ? 'up' : 'stable',
+            trendValue: selectedIdeas.length >= 5 ? 'Ready' : 'In Progress'
+        },
+        {
+            title: 'ROI Projection',
+            value: `${Math.max(projectedROI, 0)}%`,
+            subtitle: '12-month return',
+            icon: '💰',
+            color: projectedROI >= 200 ? '#10b981' : '#f59e0b',
+            trend: projectedROI >= 150 ? 'up' : 'stable',
+            trendValue: projectedROI >= 200 ? 'High Return' : 'Positive'
+        }
+    ];
+
+    // ====================================================================
+    // IMPLEMENTATION PHASES AND ROADMAP
+    // ====================================================================
+
+    Outputs.ImplementationPhases = {
+        phase1: {
+            title: "Foundation",
+            duration: "Weeks 1-2",
+            description: "Establish content foundation with high-priority ideas",
+            ideas: selectedIdeas.filter((idea, index) => index < 3).map(idea => ({
+                title: idea.title,
+                priority: idea.priority_level,
+                estimatedHours: Math.ceil((idea.estimated_word_count || 2500) / 500) * 1.3
+            })),
+            objectives: [
+                "Publish top 3 highest-scoring ideas",
+                "Establish content calendar and workflow",
+                "Set up analytics and tracking systems",
+                "Create content templates and guidelines"
+            ],
+            successMetrics: ["3 posts published", "Analytics configured", "Templates created"]
+        },
+        phase2: {
+            title: "Growth",
+            duration: "Weeks 3-4", 
+            description: "Scale content production and optimize performance",
+            ideas: selectedIdeas.filter((idea, index) => index >= 3 && index < 6).map(idea => ({
+                title: idea.title,
+                priority: idea.priority_level,
+                estimatedHours: Math.ceil((idea.estimated_word_count || 2500) / 500) * 1.3
+            })),
+            objectives: [
+                "Add case studies and comparison content",
+                "Launch social media promotion campaigns",
+                "Begin email nurture sequences",
+                "Optimize based on early performance metrics"
+            ],
+            successMetrics: ["6 total posts", "Social engagement started", "Email sequences live"]
+        },
+        phase3: {
+            title: "Scale & Optimize",
+            duration: "Weeks 5-6",
+            description: "Complete content rollout and measure results",
+            ideas: selectedIdeas.filter((idea, index) => index >= 6).map(idea => ({
+                title: idea.title,
+                priority: idea.priority_level,
+                estimatedHours: Math.ceil((idea.estimated_word_count || 2500) / 500) * 1.3
+            })),
+            objectives: [
+                "Complete remaining selected content",
+                "Analyze performance and ROI metrics", 
+                "Plan next phase content strategy",
+                "Document lessons learned and optimize processes"
+            ],
+            successMetrics: ["All content published", "ROI measured", "Next phase planned"]
+        }
+    };
+
+    // Enhanced Resource Planning
+    Outputs.ResourcePlanning = {
+        totalEstimatedHours: selectedIdeas.reduce((total, idea) => {
+            const baseHours = Math.ceil((idea.estimated_word_count || 2500) / 500);
+            const difficultyMultiplier = {beginner: 1, intermediate: 1.3, advanced: 1.6, expert: 2}[idea.difficulty_level] || 1.3;
+            return total + Math.ceil(baseHours * difficultyMultiplier);
+        }, 0),
+        weeklyTimeCommitment: Math.round((selectedIdeas.length * 6) / 6), // Spread over 6 weeks
+        teamRecommendations: {
+            writer: selectedIdeas.length > 5 ? "1 full-time writer" : "1 part-time writer",
+            editor: selectedIdeas.length > 8 ? "1 dedicated editor" : "Writer + editor combo",
+            designer: selectedIdeas.filter(idea => idea.content_format === 'infographic').length > 0 ? "1 part-time designer" : "Optional",
+            projectManager: selectedIdeas.length > 10 ? "1 project coordinator" : "Self-managed"
+        },
+        budgetEstimation: {
+            inHouseCost: estimatedContentCost,
+            freelanceCost: Math.round(estimatedContentCost * 1.4),
+            agencyCost: selectedIdeas.length * 800,
+            recommendedApproach: estimatedContentCost < 5000 ? "In-house with freelance support" : "Hybrid team approach"
+        }
+    };
+
+    // Risk Assessment
+    Outputs.RiskAssessment = {
+        implementationRisk: selectedIdeas.length <= 8 && avgDifficultyScore <= 2.5 ? "Low" : 
+                        selectedIdeas.length <= 15 && avgDifficultyScore <= 3 ? "Medium" : "High",
+        contentDifficulty: avgDifficultyScore <= 2 ? "Low" : avgDifficultyScore <= 2.8 ? "Medium" : "High",
+        marketCompetition: (blogIdeasSummary?.avgQualityScore || 0) >= 80 ? "Low-Medium" : "Medium",
+        seoDifficulty: (blogIdeasSummary?.seoOptimizedIdeas || 0) >= (enhancedBlogIdeas.length * 0.6) ? "Low-Medium" : "Medium-High",
+        overallRiskLevel: overallSuccessProbability >= 80 ? "Low" : overallSuccessProbability >= 65 ? "Manageable" : "Moderate",
+        riskFactors: [
+            ...(selectedIdeas.length > 12 ? ["High volume may impact quality consistency"] : []),
+            ...(avgDifficultyScore > 3 ? ["Complex content requires expert knowledge"] : []),
+            ...((blogIdeasSummary?.avgQualityScore || 0) < 70 ? ["Below-average quality scores"] : [])
+        ]
+    };
+
+    // Competitive Analysis
+    Outputs.CompetitiveAdvantages = {
+        contentDifferentiation: [
+            "Data-driven approach with real performance metrics",
+            "Practical implementation focus with step-by-step guides", 
+            "2025-specific insights and future trend predictions",
+            `Comprehensive ${enhancedBlogIdeas.length}-piece content strategy`,
+            "AI-optimized content mix for maximum engagement"
+        ],
+        marketPositioning: `Early mover advantage on emerging trends with ${blogIdeasSummary?.viralPotentialIdeas || 0} high-viral-potential topics`,
+        uniqueStrengths: [
+            "Strategic topic selection based on trend analysis",
+            "Quality-scored content prioritization",
+            "Multi-format approach for diverse audience engagement",
+            "SEO-optimized with featured snippet opportunities"
+        ],
+        competitiveDifferentiators: {
+            contentQuality: (blogIdeasSummary?.avgQualityScore || 0) >= 80 ? "Superior" : "Above Average",
+            topicRelevance: "Trend-validated high-relevance topics",
+            implementationSupport: "Complete calendar and strategic guidance",
+            businessAlignment: "ROI-focused with clear success metrics"
+        }
+    };
+
+    console.log("✅ Complete dashboard outputs generated successfully!");
+    console.log("📊 Chart outputs:", {
+        qualityDistribution: !!Outputs.QualityDistributionChart,
+        formatDistribution: !!Outputs.FormatDistributionChart,
+        scoreComparison: !!Outputs.ScoreComparisonChart,
+        weeklyTimeline: !!Outputs.WeeklyTimelineChart,
+        roiProjection: !!Outputs.ROIProjectionChart,
+        topIdeas: !!Outputs.TopIdeasChart
+    });
+    console.log("📋 Table outputs:", {
+        blogIdeasTable: Outputs.BlogIdeasTableData?.length || 0,
+        selectedIdeasTable: Outputs.SelectedIdeasTableData?.length || 0,
+        qualityTierTable: Outputs.QualityTierTableData?.length || 0,
+        performanceMetrics: Outputs.PerformanceMetricsTableData?.length || 0
+    });
+    console.log("🎯 Dashboard components:", {
+        headerStatusCards: Outputs.HeaderStatusCards?.length || 0,
+        overviewMetricCards: Outputs.OverviewMetricCards?.length || 0,
+        navigationTabs: Outputs.NavigationTabs?.length || 0,
+        quickFilters: Outputs.QuickFiltersForTable?.length || 0,
+        bulkActions: Outputs.BulkActionsForTable?.length || 0,
+        strategicInsightsCards: Outputs.StrategicInsightsCards?.length || 0
+    });
+
+    // ====================================================================
+    // FINAL OUTPUTS
+    // ====================================================================
+
+    // Set core outputs
+    Outputs.BlogIdeas = enhancedBlogIdeas;
+    Outputs.BlogIdeasSummary = blogIdeasSummary;
+    Outputs.ContentCalendar = contentCalendar;
+    Outputs.StrategicInsights = strategicInsights;
+    Outputs.ResearchContext = researchContext;
+    Outputs.SelectedIdeas = selectedIdeas;
+    Outputs.HasBlogIdeas = enhancedBlogIdeas.length > 0;
+    Outputs.BlogIdeasCount = enhancedBlogIdeas.length;
+
+    // FINAL OVERRIDE: Ensure StrategicInsightsCards has the correct simple format
+    Outputs.StrategicInsightsCards = [
+        {
+            value: overallSuccessProbability,
+            displayValue: `${overallSuccessProbability}%`,
+            label: "Success Probability",
+            color: overallSuccessProbability >= 80 ? "#10b981" : overallSuccessProbability >= 65 ? "#f59e0b" : "#ef4444",
+            status: overallSuccessProbability >= 80 ? "Excellent" : overallSuccessProbability >= 65 ? "Good" : "Needs Work",
+            icon: "🎯",
+            changeIndicator: overallSuccessProbability >= 75 ? "rising" : "stable",
+            subtitle: overallSuccessProbability >= 80 ? "High Success Rate" : overallSuccessProbability >= 65 ? "Good Potential" : "Moderate Risk"
+        },
+        {
+            value: Math.max(projectedROI, 0),
+            displayValue: `${Math.max(projectedROI, 0)}%`,
+            label: "Projected ROI",
+            color: projectedROI >= 200 ? "#10b981" : projectedROI >= 100 ? "#f59e0b" : "#ef4444",
+            status: projectedROI >= 200 ? "Excellent" : projectedROI >= 100 ? "Good" : "Moderate",
+            icon: "💰",
+            changeIndicator: projectedROI >= 200 ? "strongly_rising" : projectedROI >= 100 ? "rising" : "stable",
+            subtitle: projectedROI >= 200 ? "High Return" : projectedROI >= 100 ? "Positive ROI" : "Conservative"
+        },
+        {
+            value: Math.round(blogIdeasSummary?.avgQualityScore || 0),
+            displayValue: `${Math.round(blogIdeasSummary?.avgQualityScore || 0)}%`,
+            label: "Avg Quality Score",
+            color: (blogIdeasSummary?.avgQualityScore || 0) >= 80 ? "#10b981" : 
+                   (blogIdeasSummary?.avgQualityScore || 0) >= 70 ? "#f59e0b" : "#ef4444",
+            status: (blogIdeasSummary?.avgQualityScore || 0) >= 80 ? "Excellent" : 
+                    (blogIdeasSummary?.avgQualityScore || 0) >= 70 ? "Good" : "Needs Work",
+            icon: "⭐",
+            changeIndicator: (blogIdeasSummary?.avgQualityScore || 0) >= 75 ? "rising" : "stable",
+            subtitle: (blogIdeasSummary?.avgQualityScore || 0) >= 80 ? "High Quality" : 
+                     (blogIdeasSummary?.avgQualityScore || 0) >= 70 ? "Above Average" : "Improvement Needed"
+        },
+        {
+            value: Math.min((blogIdeasSummary?.seoOptimizedIdeas || 0) * 12 + 50, 300),
+            displayValue: `+${Math.min((blogIdeasSummary?.seoOptimizedIdeas || 0) * 12 + 50, 300)}%`,
+            label: "Traffic Growth",
+            color: "#3b82f6",
+            status: (blogIdeasSummary?.seoOptimizedIdeas || 0) >= 8 ? "Excellent" : 
+                    (blogIdeasSummary?.seoOptimizedIdeas || 0) >= 5 ? "Good" : "Moderate",
+            icon: "📈",
+            changeIndicator: (blogIdeasSummary?.seoOptimizedIdeas || 0) >= 8 ? "strongly_rising" : "rising",
+            subtitle: (blogIdeasSummary?.seoOptimizedIdeas || 0) >= 8 ? "High Growth" : "Steady Growth"
+        },
+        {
+            value: selectedIdeas.length * 18 + (blogIdeasSummary?.highImpactIdeas || 0) * 12,
+            displayValue: `${selectedIdeas.length * 18 + (blogIdeasSummary?.highImpactIdeas || 0) * 12}+`,
+            label: "Qualified Leads",
+            color: selectedIdeas.length > 0 ? "#10b981" : "#6b7280",
+            status: selectedIdeas.length >= 5 ? "Excellent" : selectedIdeas.length > 0 ? "Good" : "Not Started",
+            icon: "👥",
+            changeIndicator: selectedIdeas.length >= 5 ? "rising" : selectedIdeas.length > 0 ? "stable" : "falling",
+            subtitle: selectedIdeas.length >= 5 ? "Strong Pipeline" : selectedIdeas.length > 0 ? "Building" : "Select Ideas"
+        },
+        {
+            value: "$ " + estimatedContentCost,
+            displayValue: "$ " + `${estimatedContentCost.toLocaleString()}`,
+            label: "Content Investment",
+            color: "#ef4444",
+            status: estimatedContentCost < 5000 ? "Low Cost" : estimatedContentCost < 10000 ? "Moderate" : "High Investment",
+            icon: "💸",
+            changeIndicator: "stable",
+            subtitle: estimatedContentCost < 5000 ? "Budget Friendly" : "Investment Required"
+        }
+    ];
+
+    // UI State
+    Outputs.UIState = {
+        hasData: enhancedBlogIdeas.length > 0,
+        isEmpty: enhancedBlogIdeas.length === 0,
+        hasSelections: selectedIdeas.length > 0,
+        isGenerated: hasExistingIdeas,
+        needsGeneration: !hasExistingIdeas,
+        showRegenerateConfirmation: Outputs.showRegenerateConfirmation || false,
+        lastDataUpdate: Date.now(),
+        lastSelectionUpdate: Outputs.lastSelectionUpdate || Date.now(),
+        operationMode,
+        currentView
+    };
+
+    // Debug output
+    Outputs.DebugInfo = {
+        rawBlogIdeasCount: blogIdeas?.length || 0,
+        enhancedBlogIdeasCount: enhancedBlogIdeas?.length || 0,
+        originalSummaryAvgQuality: Phase2Utils.safeGet(blogIdeasSummary, 'avgQualityScore', 'NOT_FOUND'),
+        recalculatedAvgQuality: recalculatedSummary.avgQualityScore,
+        firstIdeaQualityScore: enhancedBlogIdeas[0]?.overall_quality_score || 'NO_IDEAS',
+        qualityScoreDistribution: recalculatedSummary.qualityDistribution,
+        timestamp: new Date().toISOString()
+    };
+
+    console.log("✅ Phase 2 processing completed successfully!");
+    console.log("📊 Results summary:", {
+        operationMode,
+        totalIdeas: enhancedBlogIdeas.length,
+        selectedIdeas: selectedIdeas.length,
+        averageQuality: blogIdeasSummary?.avgQualityScore || 0,
+        hasCalendar: !!contentCalendar,
+        hasInsights: !!strategicInsights
+    });
+
+} catch (error) {
+    // ====================================================================
+    // ERROR HANDLING
+    // ====================================================================
+    
+    console.error('❌ Phase 2 function failed:', error);
+    
+    Outputs.loading = false;
+    Outputs.error = error.message || 'Unknown error occurred';
+    Outputs.success = false;
+    
+    // Clear outputs on error
+    const clearOutputs = [
+        'BlogIdeas', 'BlogIdeasSummary', 'ContentCalendar', 'StrategicInsights',
+        'OverviewMetrics', 'BlogIdeasTableData', 'ContentCalendarData', 'StrategicInsightsData'
+    ];
+    
+    clearOutputs.forEach(output => Outputs[output] = null);
+    
+    // Set error-specific outputs
+    Outputs.UIState = {
+        hasError: true,
+        errorMessage: error.message || 'Unknown error occurred',
+        hasData: false,
+        isEmpty: true,
+        needsGeneration: true,
+        operationMode,
+        currentView
+    };
+    
+    // Provide helpful error context
+    Outputs.ErrorContext = {
+        errorType: error.name || 'UnknownError',
+        timestamp: new Date().toISOString(),
+        operationMode,
+        analysisId,
+        step: operationMode === 'generate' ? 'blog_idea_generation' : 
+              operationMode === 'load' ? 'data_loading' : 'management',
+        troubleshooting: {
+            commonCauses: [
+                "Phase 1 analysis not completed or no selections made",
+                "Invalid analysis ID or user access denied",
+                "API service unavailable",
+                "Invalid LLM API keys",
+                "Network connectivity issues"
+            ],
+            suggestedActions: [
+                "Verify Phase 1 analysis completed successfully",
+                "Ensure trending topics and opportunities are selected in Phase 1",
+                "Check LLM API key validity",
+                "Try again with a different LLM provider",
+                "Contact support if error persists"
+            ]
+        }
+    };
+
+    // Initialize empty structures for missing outputs on error
+    Outputs.ROIProjections = {
+        projectedROI: 0, estimatedRevenue: 0, contentInvestment: 0,
+        breakEvenMonths: 12, monthlyTrafficIncrease: 0, qualifiedLeads: 0
+    };
+
+    Outputs.DetailedSuccessPredictions = {
+        overallSuccessProbability: 0, trafficGrowthPercentage: 0,
+        estimatedSocialShares: 0, timeToRankWeeks: "Unknown", authorityBoostLevel: "Unknown"
+    };
+
+    // Fallback empty data structures
+    Outputs.ResearchContext = {
+        analysisId: analysisId || null,
+        topic: "Unknown",
+        targetAudience: "Unknown",
+        focusArea: "Unknown",
+        totalSelections: 0
+    };
+
+    Outputs.BlogIdeas = [];
+    Outputs.BlogIdeasCount = 0;
+    Outputs.HasBlogIdeas = false;
+    
+    Outputs.SelectionSummary = {
+        selectedIdeas: 0,
+        totalIdeas: 0,
+        selectionProgress: 0,
+        readyForImplementation: false,
+        averageQualityOfSelected: 0
+    };
+
+    Outputs.HeaderStatusCards = [];
+    Outputs.BlogIdeasForTable = [];
+}
+
+// ============================================================================
+// FINALIZE OUTPUTS
+// ============================================================================
+
+Outputs.loading = false;
+Outputs.success = !Outputs.error;
+
+console.log("🏁 Phase 2 function execution completed");
+console.log("📈 Final output summary:", {
+    success: Outputs.success,
+    hasError: !!Outputs.error,
+    blogIdeasGenerated: Outputs.BlogIdeasCount || 0,
+    selectedIdeas: Outputs.SelectionSummary?.selectedIdeas || 0,
+    operationMode: operationMode,
+    timestamp: new Date().toISOString()
+});
+
+// ============================================================================
+// IMPLEMENTATION GUIDE
+// ============================================================================
+
+const Phase2ImplementationGuide = `
+🚀 PHASE 2 BLOG IDEA GENERATION - IMPLEMENTATION GUIDE
+
+OPERATION MODES:
+1. **Generate Mode**: Create new blog ideas from Phase 1 selections
+2. **Load Mode**: Load existing blog ideas for management
+3. **Manage Mode**: Handle selections, updates, and bulk operations
+
+KEY INPUTS REQUIRED:
+✅ analysisId - Phase 1 trend analysis ID (UUID)
+✅ operationMode - "generate", "load", or "manage"
+✅ llm_provider - "openai", "anthropic", "deepseek", "gemini"
+✅ [provider]Key - API key for selected LLM provider
+✅ [provider]Model - Model name for selected provider
+
+OPTIONAL INPUTS:
+- generationConfig: minIdeas, maxIdeas, contentMix, difficultyTarget
+- filterSettings: contentFormat, difficultyLevel, qualityTier, etc.
+- ideaSelectionAction: "toggle", "bulk_select", "bulk_update"
+- currentView: "overview", "ideas", "calendar", "insights"
+
+MAIN OUTPUTS:
+📊 BlogIdeas - Enhanced blog ideas with quality scores
+📈 HeaderStatusCards - Summary statistics for dashboard header
+📅 ContentCalendar - Publishing strategy and timeline
+💡 StrategicInsights - Success predictions and recommendations
+🎯 SelectionSummary - Selection management data
+📋 BlogIdeasForTable - Formatted data for Noodl table components
+
+API ENDPOINTS USED:
+- POST /api/v2/generate-blog-ideas/{analysisId}
+- Supabase tables: blog_ideas, content_calendar, blog_generation_results
+
+WORKFLOW INTEGRATION:
+Phase 1 → Select Topics/Opportunities → Phase 2 → Generate Ideas → Phase 3 (Content Creation)
+
+ERROR HANDLING:
+- Comprehensive validation of Phase 1 prerequisites
+- Graceful fallbacks for missing data
+- Detailed troubleshooting information
+- User-friendly error messages
+
+NOODL INTEGRATION NOTES:
+- All outputs are ready for Noodl UI components
+- Table data includes sorting and filtering metadata
+- Selection management includes bulk operations
+- Header status cards provide real-time metrics
+`;
+
+Outputs.Phase2ImplementationGuide = Phase2ImplementationGuide;

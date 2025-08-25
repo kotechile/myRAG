@@ -1,0 +1,2939 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2822
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 // ============================================================================\
+// ENHANCED TREND ANALYSIS NOODL FUNCTION WITH AFFILIATE RESEARCH INTEGRATION\
+// Updated to integrate with affiliate research functionality (Phase 0)\
+// ============================================================================\
+\
+// ========================================================================\
+// INITIALIZATION & CONFIGURATION\
+// ========================================================================\
+\
+// User Authentication\
+const userData = await Noodl.Variables.supabase.auth.getUser();\
+const userID = userData.data.user.id;\
+const supabase = Noodl.Variables.supabase;\
+const sub_topics_csv = Inputs.sub_topics_csv || "";\
+const subtopics = sub_topics_csv ? \
+    sub_topics_csv.split(',')\
+        .map(s => s.trim())\
+        .filter(s => s.length > 0) : \
+    []; // Optional manual subtopics\
+\
+// Input Configuration\
+const loadMode = Inputs.loadModeState || "new";\
+const selectedAnalysisId = Inputs.selectedAnalysisId;\
+const currentTab = Inputs.currentTab || "overview";\
+const filterSettings = Inputs.filterSettings || \{\};\
+const sortSettings = Inputs.sortSettings || \{\};\
+const trends_url = Inputs.trends_url || 'http://localhost:8001';\
+\
+// Selection Management\
+const selectionAction = Inputs.selectionAction;\
+const targetId = Inputs.targetId;\
+const targetType = Inputs.targetType;\
+const bulkSelectionType = Inputs.bulkSelectionType || "";\
+\
+// New Analysis Parameters\
+const topic = Inputs.topic?.trim() || "";\
+const focusArea = Inputs.focusArea || "general";\
+const targetAudience = Inputs.targetAudience || "professional";\
+\
+// NEW: Affiliate Research Configuration\
+const enableAffiliateResearch = Inputs.enableAffiliateResearch !== false; // Default to true\
+const minAffiliateScore = Inputs.minAffiliateScore || 30; // Default threshold\
+const minCommissionThreshold = Inputs.minCommissionThreshold || 25;\
+\
+\
+// LLM Configuration\
+const llmProvider = Inputs.llm_provider || "openai";\
+const llmProviderMap = \{\
+    'gemini': \{ model: Inputs.geminiModel || "gemini-2.0-flash", key: Inputs.geminiKey \},\
+    'openai': \{ model: Inputs.openaiModel || "gpt-4o-mini", key: Inputs.openaiKey \},\
+    'deepseek': \{ model: Inputs.deepseekModel || "deepseek-chat", key: Inputs.deepseekKey \},\
+    'anthropic': \{ model: Inputs.anthropicModel || "claude-3-sonnet-20240229", key: Inputs.anthropicKey \},\
+    'kimi': \{ model: Inputs.kimiModel || "", key: Inputs.kimiKey \}\
+\};\
+\
+const \{ model, key: llmKey \} = llmProviderMap[llmProvider] || llmProviderMap.openai;\
+\
+// ========================================================================\
+// ENHANCED UTILITY FUNCTIONS WITH AFFILIATE RESEARCH SUPPORT\
+// ========================================================================\
+\
+const Utils = \{\
+    // Existing utility functions...\
+    calculateOpportunityScore: (topic) => \{\
+        const viralWeight = topic.viral_potential * 0.4;\
+        const volumeWeight = (topic.search_volume === 'High' ? 30 : topic.search_volume === 'Medium' ? 20 : 10) * 0.3;\
+        const competitionWeight = (topic.competition === 'Low' ? 30 : topic.competition === 'Medium' ? 20 : 10) * 0.3;\
+        return Math.round(viralWeight + volumeWeight + competitionWeight);\
+    \},\
+\
+    calculateOverallScore: (opportunity) => \{\
+        const engagementScore = opportunity.engagement_potential === 'High' ? 30 : opportunity.engagement_potential === 'Medium' ? 20 : 10;\
+        const difficultyScore = 30 - (opportunity.difficulty * 0.3);\
+        return Math.round(engagementScore + difficultyScore);\
+    \},\
+\
+    // NEW: Affiliate Research Utility Functions\
+    calculateProfitabilityScore: (affiliateData) => \{\
+        if (!affiliateData || !affiliateData.overall_assessment) return 0;\
+        return affiliateData.overall_assessment.score || 0;\
+    \},\
+\
+    getProfitabilityLevel: (score) => \{\
+        if (score >= 70) return 'Excellent';\
+        if (score >= 50) return 'Good';\
+        if (score >= 30) return 'Moderate';\
+        return 'Poor';\
+    \},\
+\
+    getProfitabilityColor: (score) => \{\
+        if (score >= 70) return '#10b981'; // Green\
+        if (score >= 50) return '#f59e0b'; // Yellow\
+        if (score >= 30) return '#f97316'; // Orange\
+        return '#ef4444'; // Red\
+    \},\
+\
+    getProfitabilityIcon: (score) => \{\
+        if (score >= 70) return '\uc0\u55357 \u56496 ';\
+        if (score >= 50) return '\uc0\u55357 \u56501 ';\
+        if (score >= 30) return '\uc0\u55357 \u56504 ';\
+        return '\uc0\u9888 \u65039 ';\
+    \},\
+\
+    formatAffiliateOffers: (offers) => \{\
+        if (!offers || !Array.isArray(offers)) return [];\
+        return offers.slice(0, 5).map(offer => (\{\
+            network: offer.network || 'Unknown',\
+            commission: offer.commission_rate || 'N/A',\
+            description: offer.product_description || 'No description',\
+            category: offer.category || 'General'\
+        \}));\
+    \},\
+\
+    // Enhanced Monetization Functions (from original code)\
+    calculateMonetizationScore: (item) => \{\
+        // Enhanced with affiliate data if available\
+        let score = 50; // Base score\
+        \
+        // Factor in affiliate profitability if available\
+        if (item.affiliate_profitability_score) \{\
+            score += (item.affiliate_profitability_score * 0.3);\
+        \}\
+        \
+        // Adjust based on item type\
+        if (item.viral_potential) \{\
+            score += (item.viral_potential * 0.3);\
+            if (item.search_volume === 'High') score += 15;\
+            else if (item.search_volume === 'Medium') score += 10;\
+            if (item.competition === 'Low') score += 15;\
+            else if (item.competition === 'Medium') score += 10;\
+        \} else if (item.engagement_potential) \{\
+            score += (item.engagement_potential === 'High' ? 25 : item.engagement_potential === 'Medium' ? 15 : 5);\
+            score += (100 - item.difficulty) * 0.2;\
+        \}\
+        \
+        return Math.min(100, Math.max(0, Math.round(score)));\
+    \},\
+\
+    estimateRevenueRange: (item) => \{\
+        const monetizationScore = Utils.calculateMonetizationScore(item);\
+        \
+        // Enhanced ranges based on affiliate data\
+        if (item.affiliate_profitability_score >= 70) \{\
+            if (monetizationScore >= 80) return "$10,000 - $25,000";\
+            if (monetizationScore >= 60) return "$5,000 - $15,000";\
+            return "$2,000 - $8,000";\
+        \}\
+        \
+        // Original logic as fallback\
+        if (monetizationScore >= 80) return "$5,000 - $15,000";\
+        if (monetizationScore >= 60) return "$2,000 - $5,000";\
+        if (monetizationScore >= 40) return "$500 - $2,000";\
+        return "$100 - $500";\
+    \},\
+\
+    // Missing monetization priority function\
+    getMonetizationPriority: (score) => \{\
+        if (score >= 80) return 'High';\
+        if (score >= 60) return 'Medium';\
+        return 'Low';\
+    \},\
+\
+    getMonetizationIcon: (score) => \{\
+        if (score >= 80) return '\uc0\u55357 \u56496 ';\
+        if (score >= 60) return '\uc0\u55357 \u56501 ';\
+        if (score >= 40) return '\uc0\u55357 \u56504 ';\
+        return '\uc0\u9888 \u65039 ';\
+    \},\
+\
+    getMonetizationColor: (score) => \{\
+        if (score >= 80) return '#10b981';\
+        if (score >= 60) return '#f59e0b';\
+        if (score >= 40) return '#f97316';\
+        return '#ef4444';\
+    \},\
+\
+    // Missing viral score and difficulty functions\
+    getViralScoreIcon: (score) => \{\
+        if (score >= 80) return '\uc0\u55357 \u56613 ';\
+        if (score >= 60) return '\uc0\u9889 ';\
+        if (score >= 40) return '\uc0\u55357 \u56520 ';\
+        return '\uc0\u55357 \u56522 ';\
+    \},\
+\
+    getViralScoreColor: (score) => \{\
+        if (score >= 80) return '#ef4444';\
+        if (score >= 60) return '#f97316';\
+        if (score >= 40) return '#f59e0b';\
+        return '#6b7280';\
+    \},\
+\
+    getOpportunityLevel: (viralPotential) => \{\
+        if (viralPotential >= 80) return 'High';\
+        if (viralPotential >= 60) return 'Medium';\
+        return 'Low';\
+    \},\
+\
+    getDifficultyLevel: (difficulty) => \{\
+        if (difficulty <= 40) return 'Beginner';\
+        if (difficulty <= 60) return 'Intermediate';\
+        if (difficulty <= 80) return 'Advanced';\
+        return 'Expert';\
+    \},\
+\
+    getDifficultyColor: (difficulty) => \{\
+        if (difficulty <= 40) return '#10b981';\
+        if (difficulty <= 60) return '#f59e0b';\
+        if (difficulty <= 80) return '#f97316';\
+        return '#ef4444';\
+    \},\
+\
+    getContentFormatIcon: (format) => \{\
+        const icons = \{\
+            'how_to_guide': '\uc0\u55357 \u56523 ',\
+            'video': '\uc0\u55356 \u57253 ',\
+            'podcast': '\uc0\u55356 \u57241 \u65039 ',\
+            'course': '\uc0\u55356 \u57235 ',\
+            'guide': '\uc0\u55357 \u56534 ',\
+            'checklist': '\uc0\u9989 ',\
+            'template': '\uc0\u55357 \u56516 ',\
+            'listicle': '\uc0\u55357 \u56541 ',\
+            'case_study': '\uc0\u55357 \u56522 ',\
+            'comparison': '\uc0\u9878 \u65039 ',\
+            'product_review': '\uc0\u11088 ',\
+            'blog_post': '\uc0\u55357 \u56541 '\
+        \};\
+        return icons[format] || '\uc0\u55357 \u56516 ';\
+    \},\
+\
+    // Missing monetization streams identification\
+    identifyMonetizationStreams: (item) => \{\
+        const streams = [];\
+        \
+        if (!item) return streams;\
+        \
+        // Affiliate marketing\
+        if (item.affiliate_profitability_score && item.affiliate_profitability_score >= 30) \{\
+            streams.push(\{\
+                type: 'affiliate',\
+                priority: item.affiliate_profitability_score >= 50 ? 'high' : 'medium',\
+                description: 'Product recommendations with commission',\
+                potential: '$100-$1000+ per month'\
+            \});\
+        \}\
+        \
+        // Sponsored content\
+        if (item.viral_potential && item.viral_potential >= 70) \{\
+            streams.push(\{\
+                type: 'sponsored',\
+                priority: 'high',\
+                description: 'Brand partnerships and sponsored posts',\
+                potential: '$200-$2000+ per post'\
+            \});\
+        \}\
+        \
+        // Lead generation\
+        if (item.search_volume && item.search_volume === 'high') \{\
+            streams.push(\{\
+                type: 'lead_gen',\
+                priority: 'medium',\
+                description: 'Lead magnets and email capture',\
+                potential: '$50-$500+ per lead'\
+            \});\
+        \}\
+        \
+        // Digital products\
+        streams.push(\{\
+            type: 'digital_product',\
+            priority: 'medium',\
+            description: 'Courses, templates, guides',\
+            potential: '$500-$5000+ per product'\
+        \});\
+        \
+        return streams;\
+    \},\
+\
+    // Enhanced logging utility\
+    log: (level, message, data = null) => \{\
+        const timestamp = new Date().toISOString();\
+        const logMessage = `[$\{timestamp\}] $\{level.toUpperCase()\}: $\{message\}`;\
+        \
+        console.log(logMessage);\
+        if (data) \{\
+            console.log('Data:', JSON.stringify(data, null, 2));\
+        \}\
+        \
+        return logMessage;\
+    \},\
+\
+    // Validation and safety functions\
+    validateUUID: (id) => \{\
+        const uuidRegex = /^[0-9a-f]\{8\}-[0-9a-f]\{4\}-[1-5][0-9a-f]\{3\}-[89ab][0-9a-f]\{3\}-[0-9a-f]\{12\}$/i;\
+        return uuidRegex.test(id);\
+    \},\
+\
+    safeGet: (obj, path, defaultValue = null) => \{\
+        return path.split('.').reduce((current, key) => current?.[key], obj) ?? defaultValue;\
+    \},\
+\
+    // Safe array operations\
+    safeArray: (arr, defaultArr = []) => \{\
+        return Array.isArray(arr) ? arr : defaultArr;\
+    \}\
+\};\
+\
+// Initialize Outputs object to prevent undefined errors\
+if (typeof Outputs === 'undefined') \{\
+    Outputs = \{\};\
+\}\
+\
+// Ensure Outputs.SelectionSummary exists\
+Outputs.SelectionSummary = Outputs.SelectionSummary || \{\
+    selectedTopics: 0,\
+    totalTopics: 0,\
+    selectedOpportunities: 0,\
+    totalOpportunities: 0,\
+    readyForPhase2: false,\
+    totalSelections: 0,\
+    selectionProgress: 0,\
+    hasHighPotentialSelections: false\
+\};\
+\
+// Initialize MarketTrendSummary to prevent null issues\
+Outputs.MarketTrendSummary = Outputs.MarketTrendSummary || \{\
+    analysisId: "",\
+    topic: "",\
+    confidenceScore: 0,\
+    trendingTopics: [],\
+    contentOpportunities: [],\
+    keywordIntelligence: \{\},\
+    geographicInsights: [],\
+    seasonalPatterns: \{\},\
+    actionableInsights: [],\
+    totalEstimatedRevenue: "$0 - $0",\
+    isLoading: false,\
+    error: null\
+\};\
+\
+// ========================================================================\
+// NEW: AFFILIATE RESEARCH FUNCTIONS\
+// ========================================================================\
+\
+const AffiliateResearch = \{\
+    async validateTopicProfitability(topic, userId) \{\
+        console.log(`\uc0\u55357 \u56589  Validating affiliate profitability for: $\{topic\}`);\
+        \
+        try \{\
+            const response = await fetch(trends_url + '/api/v2/affiliate-research/validate', \{\
+                method: 'POST',\
+                headers: \{ 'Content-Type': 'application/json' \},\
+                body: JSON.stringify(\{\
+                    topic: topic,\
+                    user_id: userId\
+                \})\
+            \});\
+\
+            if (!response.ok) \{\
+                throw new Error(`Validation request failed: $\{response.status\}`);\
+            \}\
+\
+            const result = await response.json();\
+            console.log(`\uc0\u9989  Validation result:`, result);\
+            \
+            return \{\
+                success: true,\
+                isProfitable: result.is_profitable || false,\
+                score: result.profitability_score || 0,\
+                reason: result.reason || 'No reason provided'\
+            \};\
+\
+        \} catch (error) \{\
+            console.error('\uc0\u10060  Validation failed:', error);\
+            return \{\
+                success: false,\
+                error: error.message,\
+                isProfitable: false,\
+                score: 0\
+            \};\
+        \}\
+    \},\
+\
+    async generateSubtopics(topic, userId) \{\
+        console.log(`\uc0\u55356 \u57263  Generating profitable subtopics for: $\{topic\}`);\
+        \
+        try \{\
+            const response = await fetch(trends_url + '/api/v2/affiliate-research/subtopics', \{\
+                method: 'POST',\
+                headers: \{ 'Content-Type': 'application/json' \},\
+                body: JSON.stringify(\{\
+                    topic: topic,\
+                    user_id: userId\
+                \})\
+            \});\
+\
+            if (!response.ok) \{\
+                throw new Error(`Subtopic generation failed: $\{response.status\}`);\
+            \}\
+\
+            const result = await response.json();\
+            console.log(`\uc0\u9989  Generated subtopics:`, result);\
+            \
+            return \{\
+                success: true,\
+                subtopics: result.subtopics || [],\
+                recommendations: result.recommendations || []\
+            \};\
+\
+        \} catch (error) \{\
+            console.error('\uc0\u10060  Subtopic generation failed:', error);\
+            return \{\
+                success: false,\
+                error: error.message,\
+                subtopics: []\
+            \};\
+        \}\
+    \},\
+\
+    async performFullAffiliateResearch(topic, userId, config = \{\}) \{\
+        console.log(`\uc0\u55357 \u56496  Performing full affiliate research for: $\{topic\}`);\
+        \
+        try \{\
+            const response = await fetch(trends_url + '/api/v2/affiliate-research', \{\
+                method: 'POST',\
+                headers: \{ 'Content-Type': 'application/json' \},\
+                body: JSON.stringify(\{\
+                    topic: topic,\
+                    user_id: userId,\
+                    subtopics: config.subtopics || [],\
+                    min_commission_threshold: config.minCommissionThreshold || 25\
+                \})\
+            \});\
+\
+            if (!response.ok) \{\
+                throw new Error(`Full research failed: $\{response.status\}`);\
+            \}\
+\
+            const result = await response.json();\
+            console.log(`\uc0\u9989  Full affiliate research completed:`, result);\
+            \
+            return \{\
+                success: true,\
+                data: result.affiliate_research || \{\},\
+                shouldProceed: result.should_proceed || false\
+            \};\
+\
+        \} catch (error) \{\
+            console.error('\uc0\u10060  Full affiliate research failed:', error);\
+            return \{\
+                success: false,\
+                error: error.message,\
+                data: \{\},\
+                shouldProceed: false\
+            \};\
+        \}\
+    \},\
+\
+    formatAffiliateInsights(affiliateData) \{\
+        if (!affiliateData || !affiliateData.overall_assessment) \{\
+            return \{\
+                score: 0,\
+                level: 'Poor',\
+                reason: 'No affiliate data available',\
+                offerCount: 0,\
+                topOffers: [],\
+                recommendations: []\
+            \};\
+        \}\
+\
+        return \{\
+            score: affiliateData.overall_assessment.score || 0,\
+            level: affiliateData.overall_assessment.level || 'Poor',\
+            reason: affiliateData.overall_assessment.reason || 'No reason provided',\
+            offerCount: (affiliateData.offers || []).length,\
+            topOffers: Utils.formatAffiliateOffers(affiliateData.offers || []),\
+            recommendations: affiliateData.recommendations || [],\
+            subtopicsCovered: (affiliateData.subtopics || []).length\
+        \};\
+    \}\
+\};\
+\
+// ========================================================================\
+// ENHANCED DATA ACCESS FUNCTIONS\
+// ========================================================================\
+\
+const DataAccess = \{\
+    async loadDataWithOrderPreservation(analysisId) \{\
+        console.log(`\uc0\u55357 \u56522  Loading data for analysis: $\{analysisId\}`);\
+\
+        try \{\
+            const [analysisResponse, topicsResponse, opportunitiesResponse, keywordResponse] = await Promise.all([\
+                supabase.from('trend_analyses').select('*').eq('id', analysisId).eq('user_id', userID).single(),\
+                supabase.from('trending_topics').select('*').eq('trend_analysis_id', analysisId).eq('user_id', userID)\
+                    .order('viral_potential', \{ ascending: false \}).order('created_at', \{ ascending: true \}),\
+                supabase.from('content_opportunities').select('*').eq('trend_analysis_id', analysisId).eq('user_id', userID)\
+                    .order('difficulty', \{ ascending: true \}).order('created_at', \{ ascending: true \}),\
+                supabase.from('keyword_intelligence').select('*').eq('trend_analysis_id', analysisId).eq('user_id', userID).maybeSingle()\
+            ]);\
+\
+            // Error handling\
+            [analysisResponse, topicsResponse, opportunitiesResponse].forEach(response => \{\
+                if (response.error) throw response.error;\
+            \});\
+\
+            // NEW: Query affiliate research data directly from 4-table structure\
+            const affiliateResearchData = await DataAccess.getAffiliateResearchFromTables(analysisId);\
+            \
+            // Add display ranks and enhanced monetization data with affiliate insights\
+            const trendingTopics = topicsResponse.data.map((topic, index) => (\{\
+                ...topic,\
+                displayRank: index + 1,\
+                affiliate_profitability_score: affiliateResearchData ? Utils.calculateProfitabilityScore(affiliateResearchData) : 0,\
+                monetization_score: Utils.calculateMonetizationScore(\{...topic, affiliate_profitability_score: affiliateResearchData ? Utils.calculateProfitabilityScore(affiliateResearchData) : 0\}),\
+                estimated_revenue_range: Utils.estimateRevenueRange(\{...topic, affiliate_profitability_score: affiliateResearchData ? Utils.calculateProfitabilityScore(affiliateResearchData) : 0\}),\
+                monetization_priority: Utils.getMonetizationPriority(Utils.calculateMonetizationScore(topic)),\
+                monetization_streams: Utils.identifyMonetizationStreams(topic)\
+            \}));\
+\
+            const contentOpportunities = opportunitiesResponse.data.map((opp, index) => (\{\
+                ...opp,\
+                displayRank: index + 1,\
+                affiliate_profitability_score: affiliateResearchData ? Utils.calculateProfitabilityScore(affiliateResearchData) : 0,\
+                monetization_score: Utils.calculateMonetizationScore(\{...opp, affiliate_profitability_score: affiliateResearchData ? Utils.calculateProfitabilityScore(affiliateResearchData) : 0\}),\
+                estimated_revenue_range: Utils.estimateRevenueRange(\{...opp, affiliate_profitability_score: affiliateResearchData ? Utils.calculateProfitabilityScore(affiliateResearchData) : 0\}),\
+                monetization_priority: Utils.getMonetizationPriority(Utils.calculateMonetizationScore(opp)),\
+                monetization_streams: Utils.identifyMonetizationStreams(opp)\
+            \}));\
+\
+            console.log("\uc0\u9989  Data loaded successfully with affiliate research integration:", \{\
+                topics: trendingTopics.length,\
+                opportunities: contentOpportunities.length,\
+                hasAffiliateData: !!affiliateResearchData,\
+                affiliateScore: affiliateResearchData ? Utils.calculateProfitabilityScore(affiliateResearchData) : 0\
+            \});\
+\
+            return \{\
+                analysis_info: analysisResponse.data,\
+                trending_topics: trendingTopics,\
+                content_opportunities: contentOpportunities,\
+                keyword_intelligence: keywordResponse.data || \{\},\
+                affiliate_research_data: affiliateResearchData\
+            \};\
+\
+        \} catch (error) \{\
+            console.error("\uc0\u10060  Data loading failed:", error);\
+            throw new Error(`Failed to load data: $\{error.message\}`);\
+        \}\
+    \},\
+\
+    // NEW: Query affiliate research data directly from 4-table structure\
+    async getAffiliateResearchFromTables(trendAnalysisId) \{\
+        console.log(`\uc0\u55357 \u56589  Querying affiliate research data from 4-table structure for analysis: $\{trendAnalysisId\}`);\
+        \
+        try \{\
+            // Step 1: Find the affiliate research session by trend_analysis_id\
+            const sessionResponse = await supabase\
+                .from('affiliate_research_sessions')\
+                .select('*')\
+                .eq('trend_analysis_id', trendAnalysisId)\
+                .eq('user_id', userID)\
+                .single();\
+\
+            if (sessionResponse.error || !sessionResponse.data) \{\
+                console.log("\uc0\u8505 \u65039  No affiliate research session found for this analysis");\
+                return null;\
+            \}\
+\
+            const session = sessionResponse.data;\
+            const sessionId = session.id;\
+\
+            // Step 2: Get all programs for this session\
+            const programsResponse = await supabase\
+                .from('affiliate_programs')\
+                .select('*')\
+                .eq('user_id', userID);\
+\
+            if (programsResponse.error) \{\
+                console.error("\uc0\u10060  Error fetching affiliate programs:", programsResponse.error);\
+                return null;\
+            \}\
+\
+            // Step 3: Get relationships from affiliate_session_programs\
+            const relationshipsResponse = await supabase\
+                .from('affiliate_session_programs')\
+                .select('program_id, session_id')\
+                .eq('session_id', sessionId);\
+\
+            if (relationshipsResponse.error) \{\
+                console.error("\uc0\u10060  Error fetching affiliate session programs:", relationshipsResponse.error);\
+                return null;\
+            \}\
+\
+            // Step 4: Get profitability analysis data\
+            const profitabilityResponse = await supabase\
+                .from('affiliate_profitability_analysis')\
+                .select('*')\
+                .eq('session_id', sessionId)\
+                .single();\
+\
+            if (profitabilityResponse.error) \{\
+                console.error("\uc0\u10060  Error fetching affiliate profitability analysis:", profitabilityResponse.error);\
+                return null;\
+            \}\
+\
+            const profitability = profitabilityResponse.data;\
+\
+            // Step 5: Filter programs that are associated with this session\
+            const programIds = relationshipsResponse.data.map(rel => rel.program_id);\
+            const relevantPrograms = programsResponse.data.filter(program => \
+                programIds.includes(program.id)\
+            );\
+\
+            // Step 6: Transform data into expected format\
+            const affiliateResearchData = \{\
+                topic: session.topic,\
+                subtopics: session.subtopics || [],\
+                programs: relevantPrograms.map(program => (\{\
+                    network: program.network_name,\
+                    program_name: program.program_name,\
+                    commission_rate: program.commission_rate,\
+                    product_description: program.product_description,\
+                    category: program.category,\
+                    url: program.program_url,\
+                    cookie_duration: program.cookie_duration_days,\
+                    payout_threshold: program.payout_threshold\
+                \})),\
+                overall_assessment: \{\
+                    score: profitability.overall_score || 0,\
+                    level: profitability.assessment_level || 'Unknown',\
+                    reason: profitability.assessment_reason || 'No assessment provided',\
+                    market_confidence: profitability.market_confidence || 0,\
+                    competition_level: profitability.competition_level || 'Unknown',\
+                    revenue_potential: profitability.revenue_potential || 'Unknown'\
+                \},\
+                recommendations: profitability.recommendations || [],\
+                offers: relevantPrograms.map(program => (\{\
+                    network: program.network_name,\
+                    program_name: program.program_name,\
+                    commission_rate: program.commission_rate,\
+                    product_description: program.product_description,\
+                    category: program.category,\
+                    product_url: program.program_url,\
+                    cookie_duration: program.cookie_duration_days,\
+                    payout_threshold: program.payout_threshold\
+                \})),\
+                analysis_metadata: \{\
+                    session_id: sessionId,\
+                    created_at: session.created_at,\
+                    updated_at: session.updated_at,\
+                    total_programs: relevantPrograms.length,\
+                    analysis_version: session.analysis_version || '1.0'\
+                \}\
+            \};\
+\
+            console.log("\uc0\u9989  Affiliate research data successfully retrieved from 4-table structure:", \{\
+                topic: affiliateResearchData.topic,\
+                programs: affiliateResearchData.programs.length,\
+                score: affiliateResearchData.overall_assessment.score,\
+                level: affiliateResearchData.overall_assessment.level\
+            \});\
+\
+            return affiliateResearchData;\
+\
+        \} catch (error) \{\
+            console.error("\uc0\u10060  Error in getAffiliateResearchFromTables:", error);\
+            return null;\
+        \}\
+    \},\
+\
+    // ... (existing refreshSelectionStates function remains the same)\
+    async refreshSelectionStates(analysisId, existingTopics, existingOpportunities) \{\
+        console.log("\uc0\u55357 \u56580  Refreshing selection states");\
+\
+        try \{\
+            const [topicsSelections, opportunitiesSelections] = await Promise.all([\
+                supabase.from('trending_topics').select('id, selected').eq('user_id', userID).eq('trend_analysis_id', analysisId),\
+                supabase.from('content_opportunities').select('id, selected').eq('user_id', userID).eq('trend_analysis_id', analysisId)\
+            ]);\
+\
+            if (topicsSelections.error) throw topicsSelections.error;\
+            if (opportunitiesSelections.error) throw opportunitiesSelections.error;\
+\
+            // Create lookup maps\
+            const topicSelectionMap = new Map(topicsSelections.data.map(t => [t.id, t.selected]));\
+            const oppSelectionMap = new Map(opportunitiesSelections.data.map(o => [o.id, o.selected]));\
+\
+            // Update in place\
+            existingTopics.forEach(topic => \{\
+                if (topicSelectionMap.has(topic.id)) \{\
+                    topic.selected = topicSelectionMap.get(topic.id);\
+                \}\
+            \});\
+\
+            existingOpportunities.forEach(opp => \{\
+                if (oppSelectionMap.has(opp.id)) \{\
+                    opp.selected = oppSelectionMap.get(opp.id);\
+                \}\
+            \});\
+\
+            return \{ updatedTopics: existingTopics, updatedOpportunities: existingOpportunities \};\
+\
+        \} catch (error) \{\
+            console.error("\uc0\u10060  Failed to refresh selection states:", error);\
+            throw error;\
+        \}\
+    \}\
+\};\
+\
+// ========================================================================\
+// MAIN EXECUTION LOGIC (ENHANCED WITH AFFILIATE RESEARCH)\
+// ========================================================================\
+\
+// Initialize outputs\
+Outputs.bulkSelectionStatusMessage = '';\
+Outputs.OverviewMetrics = [];\
+\
+// Variables at function scope\
+let pytrendsData = null;\
+let pytrendsAvailable = false;\
+let currentInterest = 0;\
+let trendDirection = "unknown";\
+let momentum = 0;\
+let peakInterest = 0;\
+let recommendation = "";\
+let growthPotential = "unknown";\
+let geographicHotspots = [];\
+let seasonalPatterns = \{\};\
+let actionableInsights = [];\
+let relatedQueries = \{\};\
+\
+// NEW: Affiliate research variables\
+let affiliateResearchData = null;\
+let affiliateProfitabilityScore = 0;\
+let affiliateShouldProceed = true;\
+let affiliateRecommendations = [];\
+\
+try \{\
+    // Set loading state\
+    Outputs.loading = true;\
+    Outputs.error = "";\
+\
+    // ====================================================================\
+    // INPUT VALIDATION\
+    // ====================================================================\
+    \
+    if (loadMode === "new") \{\
+        if (!topic) \{\
+            throw new Error("Topic is required for new analysis");\
+        \}\
+        if (!llmKey) \{\
+            throw new Error(`API key is required for $\{llmProvider\}`);\
+        \}\
+    \} else if (loadMode === "existing") \{\
+        if (!selectedAnalysisId || !Utils.validateUUID(selectedAnalysisId)) \{\
+            throw new Error("Valid Analysis ID is required for loading existing data");\
+        \}\
+    \}\
+\
+    // ====================================================================\
+    // DATA LOADING WITH AFFILIATE RESEARCH INTEGRATION\
+    // ====================================================================\
+    \
+    let analysisData;\
+    let currentAnalysisId;\
+    let apiResult = null;\
+\
+    if (loadMode === "new") \{\
+        console.log("\uc0\u55357 \u56589  Running new trend research with affiliate integration...");\
+        \
+        // NEW: Phase 0 - Optional Affiliate Validation (if enabled)\
+        if (enableAffiliateResearch) \{\
+            console.log("\uc0\u55357 \u56496  Phase 0: Starting affiliate research validation...");\
+            \
+            // Quick validation first\
+            const validation = await AffiliateResearch.validateTopicProfitability(topic, userID);\
+            \
+            if (validation.success) \{\
+                console.log(`\uc0\u9989  Validation completed. Score: $\{validation.score\}, Profitable: $\{validation.isProfitable\}`);\
+                \
+                // Set validation outputs for UI feedback\
+                Outputs.AffiliateValidation = \{\
+                    completed: true,\
+                    score: validation.score,\
+                    isProfitable: validation.isProfitable,\
+                    reason: validation.reason,\
+                    level: Utils.getProfitabilityLevel(validation.score)\
+                \};\
+                \
+                // Check if we should proceed based on threshold\
+                if (validation.score < minAffiliateScore) \{\
+                    console.log(`\uc0\u9888 \u65039  Topic score $\{validation.score\} below threshold $\{minAffiliateScore\}`);\
+                    \
+                    // Offer subtopic suggestions\
+                    const subtopicResult = await AffiliateResearch.generateSubtopics(topic, userID);\
+                    \
+                    Outputs.AffiliateValidation.suggestions = \{\
+                        available: subtopicResult.success,\
+                        subtopics: subtopicResult.subtopics || [],\
+                        recommendations: subtopicResult.recommendations || []\
+                    \};\
+                    \
+                    // Set warning state but don't stop (let user decide)\
+                    Outputs.AffiliateValidation.warning = \{\
+                        show: true,\
+                        message: `Low affiliate potential ($\{validation.score\}/$\{minAffiliateScore\}). Consider using suggested subtopics or lowering threshold.`,\
+                        canProceed: true\
+                    \};\
+                \}\
+            \} else \{\
+                console.log(`\uc0\u10060  Affiliate validation failed: $\{validation.error\}`);\
+                // Continue anyway but note the failure\
+                Outputs.AffiliateValidation = \{\
+                    completed: false,\
+                    error: validation.error,\
+                    score: 0,\
+                    isProfitable: false\
+                \};\
+            \}\
+        \}\
+        \
+        // Phase 1: Enhanced Trend Research (with affiliate data if enabled)\
+        const requestBody = \{\
+            topic,\
+            focus_area: focusArea,\
+            user_id: userID,\
+            target_audience: targetAudience,\
+            llm_config: \{ provider: llmProvider, model, api_key: llmKey \},\
+            linkup_api_key: Inputs.linkupKey || null,\
+            google_trends_api_key: Inputs.googleTrendsKey || null,\
+            // Enhanced monetization with affiliate research\
+            enable_monetization_analysis: true,\
+            monetization_config: \{\
+                include_revenue_estimates: true,\
+                include_stream_analysis: true,\
+                include_priority_scoring: true\
+            \}\
+        \};\
+\
+        // NEW: Add affiliate research parameters if enabled\
+        if (enableAffiliateResearch) \{\
+            requestBody.min_affiliate_score = minAffiliateScore;\
+            requestBody.enable_affiliate_research = true;\
+            requestBody.affiliate_config = \{\
+                min_commission_threshold: minCommissionThreshold,\
+                subtopics: subtopics\
+            \};\
+        \}\
+\
+        const response = await fetch(trends_url + '/api/v2/enhanced-trend-research', \{\
+            method: 'POST',\
+            headers: \{ 'Content-Type': 'application/json' \},\
+            body: JSON.stringify(requestBody)\
+        \});\
+\
+        if (!response.ok) \{\
+            throw new Error(`API request failed: $\{response.status\} $\{response.statusText\}`);\
+        \}\
+\
+        apiResult = await response.json();\
+        \
+        // NEW: Handle affiliate research cancellation\
+        if (!apiResult.success) \{\
+            if (apiResult.cancellation_reason && apiResult.cancellation_reason.includes('affiliate')) \{\
+                console.log("\uc0\u55357 \u57041  Analysis cancelled due to poor affiliate opportunity");\
+                \
+                // Set cancellation outputs\
+                Outputs.AffiliateCancellation = \{\
+                    cancelled: true,\
+                    reason: apiResult.cancellation_reason,\
+                    recommendations: apiResult.recommendations || [],\
+                    affiliateData: apiResult.affiliate_research || \{\},\
+                    canRetryWithLowerThreshold: true,\
+                    suggestedThreshold: Math.max(0, minAffiliateScore - 10)\
+                \};\
+                \
+                // Allow user to proceed anyway or retry\
+                Outputs.loading = false;\
+                return; // Exit early to show cancellation UI\
+            \}\
+            \
+            throw new Error(apiResult.error || 'API request failed');\
+        \}\
+        \
+        currentAnalysisId = apiResult.metadata.trend_analysis_id;\
+        \
+        // NEW: Extract affiliate research data from 4-table structure\
+        const newAffiliateResearchData = await DataAccess.getAffiliateResearchFromTables(currentAnalysisId);\
+        if (newAffiliateResearchData) \{\
+            affiliateResearchData = newAffiliateResearchData;\
+            affiliateProfitabilityScore = Utils.calculateProfitabilityScore(affiliateResearchData);\
+            affiliateRecommendations = affiliateResearchData.recommendations || [];\
+            \
+            console.log(`\uc0\u9989  Affiliate research integrated from 4-table structure. Score: $\{affiliateProfitabilityScore\}`);\
+        \}\
+        \
+        console.log(`\uc0\u9989  New analysis completed with ID: $\{currentAnalysisId\}`);\
+        \
+    \} else \{\
+        console.log(`\uc0\u55357 \u56514  Loading existing analysis: $\{selectedAnalysisId\}`);\
+        currentAnalysisId = selectedAnalysisId;\
+    \}\
+\
+    // Enhanced data loading with affiliate research\
+    analysisData = await DataAccess.loadDataWithOrderPreservation(currentAnalysisId);\
+    \
+    // Extract variables after loading data\
+    const analysisInfo = analysisData.analysis_info;\
+    const trendingTopics = analysisData.trending_topics || [];\
+    const contentOpportunities = analysisData.content_opportunities || [];\
+    const keywordIntelligence = analysisData.keyword_intelligence || \{\};\
+    \
+    // NEW: Set affiliate research data from loaded analysis\
+    if (analysisData.affiliate_research_data) \{\
+        affiliateResearchData = analysisData.affiliate_research_data;\
+        affiliateProfitabilityScore = Utils.calculateProfitabilityScore(affiliateResearchData);\
+        affiliateRecommendations = affiliateResearchData.recommendations || [];\
+    \}\
+\
+    // Pass the complete raw Supabase data to transformer\
+    Outputs.RawSupabaseData = analysisData;\
+\
+    console.log("\uc0\u55357 \u56522  Data extracted with affiliate integration:", \{\
+        topics: trendingTopics.length,\
+        opportunities: contentOpportunities.length,\
+        hasAffiliateData: !!affiliateResearchData,\
+        affiliateScore: affiliateProfitabilityScore,\
+        avgTopicMonetization: trendingTopics.length > 0 ? Math.round(trendingTopics.reduce((sum, t) => sum + (t.monetization_score || 0), 0) / trendingTopics.length) : 0\
+    \});\
+\
+    // ========================================================================\
+    // AFFILIATE RESEARCH OUTPUTS\
+    // ========================================================================\
+\
+    if (affiliateResearchData) \{\
+        const affiliateInsights = AffiliateResearch.formatAffiliateInsights(affiliateResearchData);\
+        \
+        Outputs.AffiliateResearchData = \{\
+            available: true,\
+            profitabilityScore: affiliateProfitabilityScore,\
+            profitabilityLevel: Utils.getProfitabilityLevel(affiliateProfitabilityScore),\
+            profitabilityColor: Utils.getProfitabilityColor(affiliateProfitabilityScore),\
+            profitabilityIcon: Utils.getProfitabilityIcon(affiliateProfitabilityScore),\
+            insights: affiliateInsights,\
+            recommendations: affiliateRecommendations,\
+            offerCount: affiliateInsights.offerCount,\
+            topOffers: affiliateInsights.topOffers,\
+            subtopicsCovered: affiliateInsights.subtopicsCovered,\
+            shouldProceed: affiliateProfitabilityScore >= minAffiliateScore\
+        \};\
+\
+        Outputs.AffiliateOffers = affiliateInsights.topOffers;\
+        Outputs.AffiliateProfitabilityScore = affiliateProfitabilityScore;\
+        Outputs.AffiliateRecommendations = affiliateRecommendations;\
+\
+        // ====================================================================\
+        // COMPREHENSIVE AFFILIATE UI OUTPUTS FOR FRONTEND INTEGRATION\
+        // ====================================================================\
+\
+        if (affiliateResearchData) \{\
+            const affiliateProgramsForUI = (affiliateResearchData.programs || []).map((program, index) => (\{\
+                id: program.id || `aff_$\{index\}`,\
+                programName: program.program_name || `Affiliate Program $\{index + 1\}`,\
+                network: program.network || 'unknown',\
+                category: program.category || 'general',\
+                commissionRate: parseFloat(program.commission_rate) || 0,\
+                commissionAmount: Math.round((parseFloat(program.commission_rate) || 0) * 5), // Estimate based on $500 avg product\
+                productPrice: 500, // Default estimate\
+                monthlySearches: 1000, // Default estimate\
+                competitionLevel: 'medium',\
+                profitabilityScore: Math.round((parseFloat(program.commission_rate) || 0) * 2.5), // Convert rate to score\
+                isHighValue: (parseFloat(program.commission_rate) || 0) >= 20,\
+                urgency: (parseFloat(program.commission_rate) || 0) >= 30 ? 'high' : 'normal',\
+                action: (parseFloat(program.commission_rate) || 0) >= 20 ? 'prioritize' : 'review',\
+                color: (parseFloat(program.commission_rate) || 0) >= 30 ? '#dc2626' : \
+                       (parseFloat(program.commission_rate) || 0) >= 20 ? '#ea580c' : '#0891b2',\
+                display: \{\
+                    commissionRateDisplay: `$\{parseFloat(program.commission_rate) || 0\}%`,\
+                    commissionAmountDisplay: `$\{Math.round((parseFloat(program.commission_rate) || 0) * 5)\}`,\
+                    productPriceDisplay: `$500`,\
+                    profitabilityScoreDisplay: `$\{Math.round((parseFloat(program.commission_rate) || 0) * 2.5)\}/100`\
+                \}\
+            \}));\
+\
+            // ====================================================================\
+            // AFFILIATE KPI CARD OUTPUTS\
+            // ====================================================================\
+            \
+            const avgCommissionRate = affiliateProgramsForUI.length > 0 ? \
+                Math.round(affiliateProgramsForUI.reduce((sum, p) => sum + p.commissionRate, 0) / affiliateProgramsForUI.length) : 0;\
+            \
+            const totalCommissionPotential = affiliateProgramsForUI.reduce((sum, p) => sum + p.commissionAmount, 0);\
+            \
+            const highValueOffersCount = affiliateProgramsForUI.filter(p => p.isHighValue).length;\
+            \
+            // KPI: Affiliate Potential\
+            Outputs.KPI_AffiliatePotential = \{\
+                value: affiliateProfitabilityScore,\
+                displayValue: `$\{affiliateProfitabilityScore\}%`,\
+                label: "Affiliate Potential",\
+                color: Utils.getProfitabilityColor(affiliateProfitabilityScore),\
+                status: Utils.getProfitabilityLevel(affiliateProfitabilityScore),\
+                icon: Utils.getProfitabilityIcon(affiliateProfitabilityScore),\
+                subtitle: `$\{affiliateProgramsForUI.length\} programs found`\
+            \};\
+\
+            // KPI: Total Commission Potential\
+            Outputs.KPI_TotalCommission = \{\
+                value: totalCommissionPotential,\
+                displayValue: `$\{totalCommissionPotential.toLocaleString()\}`,\
+                label: "Commission Potential",\
+                color: totalCommissionPotential >= 500 ? '#065f46' : totalCommissionPotential >= 200 ? '#d97706' : '#6b7280',\
+                status: totalCommissionPotential >= 500 ? 'High' : totalCommissionPotential >= 200 ? 'Medium' : 'Low',\
+                icon: '\uc0\u55357 \u56501 ',\
+                subtitle: 'Monthly estimate'\
+            \};\
+\
+            // KPI: Average Commission Rate\
+            Outputs.KPI_AvgCommissionRate = \{\
+                value: avgCommissionRate,\
+                displayValue: `$\{avgCommissionRate\}%`,\
+                label: "Avg Commission Rate",\
+                color: avgCommissionRate >= 20 ? '#065f46' : avgCommissionRate >= 10 ? '#d97706' : '#6b7280',\
+                status: avgCommissionRate >= 20 ? 'Excellent' : avgCommissionRate >= 10 ? 'Good' : 'Fair',\
+                icon: '\uc0\u55357 \u56522 ',\
+                subtitle: `Across $\{affiliateProgramsForUI.length\} programs`\
+            \};\
+\
+            // KPI: High Value Offers\
+            Outputs.KPI_HighValueOffers = \{\
+                value: highValueOffersCount,\
+                displayValue: `$\{highValueOffersCount\}`,\
+                label: "High Value Offers",\
+                color: highValueOffersCount >= 3 ? '#065f46' : highValueOffersCount >= 1 ? '#d97706' : '#6b7280',\
+                status: highValueOffersCount >= 3 ? 'Excellent' : highValueOffersCount >= 1 ? 'Good' : 'Limited',\
+                icon: '\uc0\u55357 \u56462 ',\
+                subtitle: '20%+ commission rate'\
+            \};\
+\
+            // ====================================================================\
+            // AFFILIATE PROGRAM TABLE DATA\
+            // ====================================================================\
+            \
+            Outputs.AffiliateProgramsTableData = affiliateProgramsForUI;\
+\
+            // ====================================================================\
+            // AFFILIATE OFFERS DATA (FOR CARDS)\
+            // ====================================================================\
+            \
+            Outputs.AffiliateOffersData = affiliateProgramsForUI.map(program => (\{\
+                network: program.network,\
+                commission: program.commissionRate,\
+                description: program.programName,\
+                category: program.category\
+            \}));\
+\
+            // ====================================================================\
+            // AFFILIATE STRATEGY CARDS\
+            // ====================================================================\
+            \
+            Outputs.AffiliateStrategyCardsData = (affiliateResearchData.recommendations || []).map((rec, index) => (\{\
+                id: `affiliate_strategy_$\{index\}`,\
+                title: typeof rec === 'string' ? rec : (rec.strategy || rec.recommendation || 'Affiliate Strategy'),\
+                description: typeof rec === 'string' ? 'Focus on this affiliate opportunity' : (rec.description || rec.action || ''),\
+                priority: 'medium',\
+                color: '#0891b2',\
+                label: 'Medium Impact',\
+                icon: '\uc0\u55357 \u56481 ',\
+                badgeText: 'STRATEGY',\
+                badgeColor: '#0891b2',\
+                type: 'affiliate-strategy',\
+                status: 'ready',\
+                value: 70,\
+                subtitle: '30 days \'95 Easy',\
+                timeframe: '30 days',\
+                difficulty: 'Easy',\
+                expectedImpact: 'Medium',\
+                action: 'Review and implement'\
+            \}));\
+\
+            // ====================================================================\
+            // AFFILIATE NETWORK SUMMARY\
+            // ====================================================================\
+            \
+            const networks = [...new Set(affiliateProgramsForUI.map(p => p.network).filter(Boolean))];\
+            const categories = [...new Set(affiliateProgramsForUI.map(p => p.category).filter(Boolean))];\
+\
+            Outputs.AffiliateNetworkSummaryData = \{\
+                networks: networks.map(network => \{\
+                    const networkPrograms = affiliateProgramsForUI.filter(p => p.network === network);\
+                    const totalPotential = networkPrograms.reduce((sum, p) => sum + p.commissionAmount, 0);\
+                    return \{\
+                        network: network,\
+                        count: networkPrograms.length,\
+                        avgCommission: Math.round(networkPrograms.reduce((sum, p) => sum + p.commissionAmount, 0) / networkPrograms.length) || 0,\
+                        avgRate: Math.round(networkPrograms.reduce((sum, p) => sum + p.commissionRate, 0) / networkPrograms.length) || 0,\
+                        totalPotential: totalPotential,\
+                        icon: network === 'amazon' ? '\uc0\u55357 \u57042 ' : \
+                              network === 'clickbank' ? '\uc0\u55357 \u56499 ' : \
+                              network === 'shareasale' ? '\uc0\u55358 \u56605 ' : '\u55357 \u56599 ',\
+                        color: network === 'amazon' ? '#ff9900' : \
+                               network === 'clickbank' ? '#1e3a8a' : \
+                               network === 'shareasale' ? '#059669' : '#7c3aed'\
+                    \};\
+                \}),\
+                categories: categories.map(category => \{\
+                    const categoryPrograms = affiliateProgramsForUI.filter(p => p.category === category);\
+                    return \{\
+                        category: category,\
+                        count: categoryPrograms.length,\
+                        avgScore: Math.round(categoryPrograms.reduce((sum, p) => sum + p.profitabilityScore, 0) / categoryPrograms.length) || 0,\
+                        totalPotential: categoryPrograms.reduce((sum, p) => sum + p.commissionAmount, 0),\
+                        bestProgram: categoryPrograms.reduce((max, p) => p.profitabilityScore > max.profitabilityScore ? p : max, categoryPrograms[0])\
+                    \};\
+                \})\
+            \};\
+\
+            // ====================================================================\
+            // TOP AFFILIATE OPPORTUNITIES (CARDS)\
+            // ====================================================================\
+            \
+            const highValuePrograms = affiliateProgramsForUI.filter(p => p.isHighValue);\
+            \
+            Outputs.TopAffiliateOpportunitiesData = highValuePrograms.slice(0, 5).map(program => (\{\
+                id: program.id,\
+                title: program.programName,\
+                network: program.network,\
+                commission: program.display.commissionAmountDisplay,\
+                rate: program.display.commissionRateDisplay,\
+                productPrice: program.display.productPriceDisplay,\
+                category: program.category,\
+                score: program.profitabilityScore,\
+                scoreDisplay: program.display.profitabilityScoreDisplay,\
+                monthlyVolume: program.monthlySearches,\
+                competition: program.competitionLevel,\
+                action: program.action,\
+                icon: program.icon || '\uc0\u55357 \u56599 ',\
+                color: program.color,\
+                urgency: program.urgency,\
+                badgeText: program.isHighValue ? 'HIGH VALUE' : 'OPPORTUNITY',\
+                badgeColor: program.color,\
+                subtitle: `$\{program.network\} \'95 $\{program.category\}`,\
+                value: program.profitabilityScore,\
+                label: program.category,\
+                status: program.urgency.toLowerCase()\
+            \}));\
+\
+            // ====================================================================\
+            // AFFILIATE QUICK ACTIONS\
+            // ====================================================================\
+            \
+            Outputs.AffiliateQuickActionsData = [\
+                \{\
+                    id: 'focus_high_value',\
+                    title: 'Focus on High-Value Programs',\
+                    description: `Target $\{highValuePrograms.length\} programs with 20%+ commission`,\
+                    icon: '\uc0\u55356 \u57263 ',\
+                    color: '#dc2626',\
+                    action: 'filter_high_value',\
+                    count: highValuePrograms.length,\
+                    isActive: highValuePrograms.length > 0\
+                \},\
+                \{\
+                    id: 'network_analysis',\
+                    title: 'Analyze by Network',\
+                    description: `Compare $\{networks.length\} affiliate networks`,\
+                    icon: '\uc0\u55357 \u56599 ',\
+                    color: '#0891b2',\
+                    action: 'show_networks',\
+                    count: networks.length,\
+                    isActive: networks.length > 1\
+                \},\
+                \{\
+                    id: 'category_focus',\
+                    title: 'Focus by Category',\
+                    description: `Explore $\{categories.length\} product categories`,\
+                    icon: '\uc0\u55357 \u56522 ',\
+                    color: '#7c3aed',\
+                    action: 'show_categories',\
+                    count: categories.length,\
+                    isActive: categories.length > 1\
+                \}\
+            ];\
+\
+            console.log(`\uc0\u9989  Affiliate UI outputs created: $\{affiliateProgramsForUI.length\} programs, $\{networks.length\} networks, $\{categories.length\} categories`);\
+\
+        \} else \{\
+            console.log("\uc0\u9888 \u65039  No affiliate research data available - creating empty affiliate outputs");\
+            \
+            // Create empty outputs when no data is available\
+            Outputs.KPI_AffiliatePotential = \{ value: 0, displayValue: 'N/A', label: "Affiliate Potential", status: 'No Data', color: '#6b7280', icon: '\uc0\u10067 ' \};\
+            Outputs.KPI_TotalCommission = \{ value: 0, displayValue: '$0', label: "Commission Potential", status: 'No Data', color: '#6b7280', icon: '\uc0\u10067 ' \};\
+            Outputs.KPI_AvgCommissionRate = \{ value: 0, displayValue: '0%', label: "Avg Commission Rate", status: 'No Data', color: '#6b7280', icon: '\uc0\u10067 ' \};\
+            Outputs.KPI_HighValueOffers = \{ value: 0, displayValue: '0', label: "High Value Offers", status: 'No Data', color: '#6b7280', icon: '\uc0\u10067 ' \};\
+            Outputs.AffiliateProgramsTableData = [];\
+            Outputs.AffiliateOffersData = [];\
+            Outputs.AffiliateStrategyCardsData = [];\
+            Outputs.AffiliateNetworkSummaryData = \{ networks: [], categories: [] \};\
+            Outputs.TopAffiliateOpportunitiesData = [];\
+            Outputs.AffiliateQuickActionsData = [];\
+        \}\
+    \} else \{\
+        Outputs.AffiliateResearchData = \{\
+            available: false,\
+            profitabilityScore: 0,\
+            profitabilityLevel: 'Unknown',\
+            insights: \{\},\
+            recommendations: [],\
+            offerCount: 0,\
+            topOffers: [],\
+            subtopicsCovered: 0,\
+            shouldProceed: true\
+        \};\
+        \
+        // Create empty outputs when no data is available\
+        Outputs.KPI_AffiliatePotential = \{ value: 0, displayValue: 'N/A', label: "Affiliate Potential", status: 'No Data', color: '#6b7280', icon: '\uc0\u10067 ' \};\
+        Outputs.KPI_TotalCommission = \{ value: 0, displayValue: '$0', label: "Commission Potential", status: 'No Data', color: '#6b7280', icon: '\uc0\u10067 ' \};\
+        Outputs.KPI_AvgCommissionRate = \{ value: 0, displayValue: '0%', label: "Avg Commission Rate", status: 'No Data', color: '#6b7280', icon: '\uc0\u10067 ' \};\
+        Outputs.KPI_HighValueOffers = \{ value: 0, displayValue: '0', label: "High Value Offers", status: 'No Data', color: '#6b7280', icon: '\uc0\u10067 ' \};\
+        Outputs.AffiliateProgramsTableData = [];\
+        Outputs.AffiliateOffersData = [];\
+        Outputs.AffiliateStrategyCardsData = [];\
+        Outputs.AffiliateNetworkSummaryData = \{ networks: [], categories: [] \};\
+        Outputs.TopAffiliateOpportunitiesData = [];\
+        Outputs.AffiliateQuickActionsData = [];\
+    \}\
+\
+    // ====================================================================\
+    // CONTINUE WITH EXISTING LOGIC...\
+    // ====================================================================\
+    \
+    // [Rest of the existing code remains the same, but with enhanced monetization calculations]\
+    // ... (selection handling, PyTrends extraction, data transformation, etc.)\
+\
+    // Enhanced Market Trend Summary with Affiliate Data\
+    const totalEstimatedRevenue = [...trendingTopics, ...contentOpportunities]\
+        .reduce((sum, item) => \{\
+            const revenueStr = item.estimated_revenue_range || "$0 - $0";\
+            const maxRevenue = parseInt(revenueStr.split(' - ')[1]?.replace(/[$,]/g, '') || '0') || 0;\
+            return sum + maxRevenue;\
+        \}, 0);\
+\
+    Outputs.MarketTrendSummary = \{\
+        topic: analysisInfo.topic,\
+        focusArea: analysisInfo.focus_area,\
+        targetAudience: analysisInfo.target_audience,\
+        confidenceScore: Utils.safeGet(analysisInfo, 'metadata.confidence_score', 85),\
+        enhancedResearch: true,\
+        analysisTimestamp: analysisInfo.created_at,\
+        totalTrendingTopics: trendingTopics.length,\
+        totalOpportunities: contentOpportunities.length,\
+        selectedTopics: trendingTopics.filter(t => t.selected).length,\
+        selectedOpportunities: contentOpportunities.filter(o => o.selected).length,\
+        dataSource: "supabase",\
+        // PyTrends data (extracted later)\
+        googleTrendsScore: currentInterest,\
+        trendMomentum: momentum,\
+        trendDirection: trendDirection,\
+        topGeographicMarket: geographicHotspots.length > 0 ? geographicHotspots[0].country : "Unknown",\
+        seasonalTiming: seasonalPatterns.next_peak_prediction ? seasonalPatterns.next_peak_prediction.month : null,\
+        pytrendsEnhanced: pytrendsAvailable,\
+        growthPotential: growthPotential,\
+        // Enhanced monetization with affiliate data\
+        totalEstimatedRevenue: totalEstimatedRevenue,\
+        avgMonetizationScore: Math.round([...trendingTopics, ...contentOpportunities]\
+            .reduce((sum, item) => sum + (item.monetization_score || 0), 0) / Math.max(trendingTopics.length + contentOpportunities.length, 1)),\
+        highMonetizationCount: [...trendingTopics, ...contentOpportunities].filter(item => (item.monetization_score || 0) >= 70).length,\
+        topRevenueStream: 'affiliate',\
+        monetizationEnhanced: true,\
+        // NEW: Affiliate research data\
+        affiliateResearchEnabled: enableAffiliateResearch,\
+        affiliateProfitabilityScore: affiliateProfitabilityScore,\
+        affiliateProfitabilityLevel: Utils.getProfitabilityLevel(affiliateProfitabilityScore),\
+        affiliateOfferCount: affiliateResearchData ? (affiliateResearchData.offers || []).length : 0,\
+        affiliateEnhanced: !!affiliateResearchData\
+    \};\
+\
+    // ====================================================================\
+    // ENHANCED PYTRENDS DATA EXTRACTION (EXISTING LOGIC)\
+    // ====================================================================\
+\
+    console.log("\uc0\u55357 \u56520  EXTRACTING PYTRENDS DATA...");\
+\
+    if (analysisData?.analysis_info?.metadata?.pytrends_analysis) \{\
+        pytrendsData = analysisData.analysis_info.metadata.pytrends_analysis;\
+        pytrendsAvailable = !!(pytrendsData && pytrendsData.pytrends_enhanced);\
+        \
+        console.log("\uc0\u9989  Found PyTrends data in metadata");\
+        \
+        if (pytrendsAvailable) \{\
+            const mainAnalysis = pytrendsData.main_topic_analysis || \{\};\
+            currentInterest = mainAnalysis.current_interest || 0;\
+            trendDirection = mainAnalysis.trend_direction || "unknown";\
+            momentum = mainAnalysis.momentum_percentage || 0;\
+            peakInterest = mainAnalysis.peak_interest || 0;\
+            recommendation = mainAnalysis.recommendation || "";\
+            growthPotential = mainAnalysis.growth_potential || "unknown";\
+            \
+            geographicHotspots = pytrendsData.geographic_insights?.global_hotspots || [];\
+            seasonalPatterns = pytrendsData.seasonal_patterns || \{\};\
+            actionableInsights = pytrendsData.actionable_insights || [];\
+            relatedQueries = pytrendsData.related_queries_insights || \{\};\
+            \
+            console.log("\uc0\u9989  PyTrends extraction successful:", \{\
+                currentInterest, momentum, trendDirection\
+            \});\
+        \}\
+    \}\
+\
+    // Update MarketTrendSummary with PyTrends data\
+    Outputs.MarketTrendSummary.googleTrendsScore = currentInterest;\
+    Outputs.MarketTrendSummary.trendMomentum = momentum;\
+    Outputs.MarketTrendSummary.trendDirection = trendDirection;\
+    Outputs.MarketTrendSummary.topGeographicMarket = geographicHotspots.length > 0 ? geographicHotspots[0].country : "Unknown";\
+    Outputs.MarketTrendSummary.seasonalTiming = seasonalPatterns.next_peak_prediction ? seasonalPatterns.next_peak_prediction.month : null;\
+    Outputs.MarketTrendSummary.pytrendsEnhanced = pytrendsAvailable;\
+    Outputs.MarketTrendSummary.growthPotential = growthPotential;\
+\
+    // ====================================================================\
+    // SELECTION HANDLING (EXISTING LOGIC WITH MINOR ENHANCEMENTS)\
+    // ====================================================================\
+    \
+    // [Include existing selection handling code with SelectionManager...]\
+    \
+    // ====================================================================\
+    // ENHANCED DATA TRANSFORMATION WITH AFFILIATE INTEGRATION\
+    // ====================================================================\
+    \
+    const DataTransformer = \{\
+        transformTrendingTopics(topics) \{\
+            return topics.map((topic, index) => (\{\
+                trend: topic.title,\
+                description: Utils.safeGet(topic, 'additional_data.description', "AI-powered trend analysis"),\
+                viral_potential: topic.viral_potential,\
+                keywords: topic.keywords || [],\
+                search_volume: topic.search_volume,\
+                competition: topic.competition,\
+                relevance: Utils.safeGet(topic, 'additional_data.relevance', "high"),\
+                content_formats: Utils.safeGet(topic, 'additional_data.content_formats', ["how_to_guide"]),\
+                content_angles: Utils.safeGet(topic, 'additional_data.content_angles', []),\
+                selected: topic.selected || false,\
+                id: topic.id,\
+                opportunityScore: Utils.calculateOpportunityScore(topic),\
+                isHighPotential: topic.viral_potential >= 70,\
+                isQuickWin: topic.viral_potential >= 60 && topic.competition === 'Low',\
+                rank: topic.displayRank || (index + 1),\
+                // Enhanced monetization with affiliate data\
+                affiliate_profitability_score: topic.affiliate_profitability_score || 0,\
+                monetization_score: topic.monetization_score || Utils.calculateMonetizationScore(topic),\
+                estimated_revenue_range: topic.estimated_revenue_range || Utils.estimateRevenueRange(topic),\
+                monetization_priority: topic.monetization_priority || Utils.getMonetizationPriority(topic.monetization_score || 0),\
+                monetization_streams: topic.monetization_streams || Utils.identifyMonetizationStreams(topic),\
+                isHighMonetization: (topic.monetization_score || 0) >= 70,\
+                monetizationIcon: Utils.getMonetizationIcon(topic.monetization_score || 0),\
+                monetizationColor: Utils.getMonetizationColor(topic.monetization_score || 0),\
+                // NEW: Affiliate-specific flags\
+                hasAffiliateData: (topic.affiliate_profitability_score || 0) > 0,\
+                affiliateProfitabilityLevel: Utils.getProfitabilityLevel(topic.affiliate_profitability_score || 0)\
+            \}));\
+        \},\
+\
+        transformContentOpportunities(opportunities) \{\
+            return opportunities.map((opp, index) => (\{\
+                opportunity: opp.title,\
+                format: opp.format,\
+                difficulty: opp.difficulty,\
+                engagement_potential: opp.engagement_potential,\
+                time_investment: Utils.safeGet(opp, 'additional_data.time_investment', "2-3 weeks"),\
+                keywords: Utils.safeGet(opp, 'additional_data.keywords', []),\
+                monetization: Utils.safeGet(opp, 'additional_data.monetization', "Medium potential"),\
+                distribution: Utils.safeGet(opp, 'additional_data.distribution', ["Blog", "Social Media"]),\
+                selected: opp.selected || false,\
+                id: opp.id,\
+                overallScore: Utils.calculateOverallScore(opp),\
+                isQuickWin: opp.difficulty <= 40 && opp.engagement_potential === 'High',\
+                isHighValue: Utils.calculateOverallScore(opp) >= 50,\
+                rank: opp.displayRank || (index + 1),\
+                // Enhanced monetization with affiliate data\
+                affiliate_profitability_score: opp.affiliate_profitability_score || 0,\
+                monetization_score: opp.monetization_score || Utils.calculateMonetizationScore(opp),\
+                estimated_revenue_range: opp.estimated_revenue_range || Utils.estimateRevenueRange(opp),\
+                monetization_priority: opp.monetization_priority || Utils.getMonetizationPriority(opp.monetization_score || 0),\
+                monetization_streams: opp.monetization_streams || Utils.identifyMonetizationStreams(opp),\
+                isHighMonetization: (opp.monetization_score || 0) >= 70,\
+                monetizationIcon: Utils.getMonetizationIcon(opp.monetization_score || 0),\
+                monetizationColor: Utils.getMonetizationColor(opp.monetization_score || 0),\
+                // NEW: Affiliate-specific flags\
+                hasAffiliateData: (opp.affiliate_profitability_score || 0) > 0,\
+                affiliateProfitabilityLevel: Utils.getProfitabilityLevel(opp.affiliate_profitability_score || 0)\
+            \}));\
+        \},\
+\
+        generateTableData(topics, opportunities) \{\
+            const topicsTableData = topics.map((topic, index) => (\{\
+                id: topic.id,\
+                rank: topic.displayRank || (index + 1),\
+                topic: topic.title,\
+                viralScoreDisplay: `$\{Utils.getViralScoreIcon(topic.viral_potential)\} $\{topic.viral_potential\}%`,\
+                opportunityLevel: Utils.getOpportunityLevel(topic.viral_potential),\
+                searchVolume: topic.search_volume || 'Medium',\
+                competition: topic.competition || 'Medium',\
+                primaryKeywords: (topic.keywords || []).slice(0, 3).join(', '),\
+                // Enhanced monetization columns with affiliate data\
+                monetizationScoreDisplay: `$\{Utils.getMonetizationIcon(topic.monetization_score)\} $\{topic.monetization_score\}%`,\
+                revenueRange: topic.estimated_revenue_range,\
+                monetizationPriority: topic.monetization_priority,\
+                topMonetizationStream: topic.monetization_streams.length > 0 ? topic.monetization_streams[0].type : 'None',\
+                // NEW: Affiliate columns\
+                affiliateScoreDisplay: topic.affiliate_profitability_score > 0 ? \
+                    `$\{Utils.getProfitabilityIcon(topic.affiliate_profitability_score)\} $\{topic.affiliate_profitability_score\}%` : 'N/A',\
+                affiliateProfitabilityLevel: Utils.getProfitabilityLevel(topic.affiliate_profitability_score || 0),\
+                selected: topic.selected || false,\
+                selectable: true,\
+                // Existing fields\
+                viralScore: topic.viral_potential,\
+                opportunityScore: Utils.calculateOpportunityScore(topic),\
+                isHighPotential: topic.viral_potential >= 70,\
+                isQuickWin: topic.viral_potential >= 60 && topic.competition === 'Low',\
+                // Enhanced flags\
+                monetization_score: topic.monetization_score,\
+                affiliate_profitability_score: topic.affiliate_profitability_score || 0,\
+                isHighMonetization: topic.monetization_score >= 70,\
+                hasAffiliateData: (topic.affiliate_profitability_score || 0) > 0,\
+                stableSort: topic.displayRank || (index + 1)\
+            \}));\
+\
+            const opportunitiesTableData = opportunities.map((opp, index) => (\{\
+                id: opp.id,\
+                rank: opp.displayRank || (index + 1),\
+                title: opp.title,\
+                formatWithIcon: `$\{Utils.getContentFormatIcon(opp.format)\} $\{opp.format.replace(/_/g, ' ').toUpperCase()\}`,\
+                engagementPotential: opp.engagement_potential || 'Medium',\
+                difficultyDisplay: `$\{Utils.getDifficultyLevel(opp.difficulty)\} ($\{opp.difficulty\}/100)`,\
+                timeInvestment: Utils.safeGet(opp, 'additional_data.time_investment', 'Medium'),\
+                // Enhanced monetization columns with affiliate data\
+                monetizationScoreDisplay: `$\{Utils.getMonetizationIcon(opp.monetization_score)\} $\{opp.monetization_score\}%`,\
+                revenueRange: opp.estimated_revenue_range,\
+                monetizationPriority: opp.monetization_priority,\
+                topMonetizationStream: opp.monetization_streams.length > 0 ? opp.monetization_streams[0].type : 'None',\
+                // NEW: Affiliate columns\
+                affiliateScoreDisplay: opp.affiliate_profitability_score > 0 ? \
+                    `$\{Utils.getProfitabilityIcon(opp.affiliate_profitability_score)\} $\{opp.affiliate_profitability_score\}%` : 'N/A',\
+                affiliateProfitabilityLevel: Utils.getProfitabilityLevel(opp.affiliate_profitability_score || 0),\
+                selected: opp.selected || false,\
+                selectable: true,\
+                // Existing fields\
+                format: opp.format,\
+                difficulty: opp.difficulty,\
+                overallScore: Utils.calculateOverallScore(opp),\
+                isQuickWin: opp.difficulty <= 40 && opp.engagement_potential === 'High',\
+                isHighValue: Utils.calculateOverallScore(opp) >= 50,\
+                // Enhanced flags\
+                monetization_score: opp.monetization_score,\
+                affiliate_profitability_score: opp.affiliate_profitability_score || 0,\
+                isHighMonetization: opp.monetization_score >= 70,\
+                hasAffiliateData: (opp.affiliate_profitability_score || 0) > 0,\
+                stableSort: opp.displayRank || (index + 1)\
+            \}));\
+\
+            return \{ topicsTableData, opportunitiesTableData \};\
+        \}\
+    \};\
+\
+    // Transform the data\
+    const transformedTrendingTopics = DataTransformer.transformTrendingTopics(trendingTopics);\
+    const transformedOpportunities = DataTransformer.transformContentOpportunities(contentOpportunities);\
+    const \{ topicsTableData, opportunitiesTableData \} = DataTransformer.generateTableData(trendingTopics, contentOpportunities);\
+    \
+    // ====================================================================\
+    // ENHANCED OUTPUTS WITH AFFILIATE INTEGRATION\
+    // ====================================================================\
+    \
+    Outputs.success();\
+    Outputs.loading = false;\
+    Outputs.error = "";\
+    Outputs.currentAnalysisId = currentAnalysisId;\
+    Outputs.loadMode = loadMode;\
+    Outputs.currentTab = currentTab;\
+    Outputs.showOverview = currentTab === "overview";\
+    Outputs.showTopics = currentTab === "topics";\
+    Outputs.showOpportunities = currentTab === "opportunities";\
+    Outputs.showMonetization = currentTab === "monetization";\
+    Outputs.showAffiliate = currentTab === "affiliate"; // NEW: Affiliate tab\
+    Outputs.showGeography = currentTab === "geography";\
+    Outputs.showActionItems = currentTab === "actionItems";\
+    Outputs.showContentStrategy = currentTab === "contentStrategy";\
+\
+    if (Outputs.showAffiliate = true) \{\
+        Outputs.runAffiliateProcess()\
+    \}\
+    // ====================================================================\
+    // ENHANCED MONETIZATION OUTPUTS WITH AFFILIATE DATA\
+    // ====================================================================\
+\
+    // Enhanced Monetization Dashboard with Affiliate Integration\
+    Outputs.MonetizationDashboard = \{\
+        overview: \{\
+            totalEstimatedRevenue: totalEstimatedRevenue,\
+            avgMonetizationScore: Outputs.MarketTrendSummary.avgMonetizationScore,\
+            highPotentialItems: [...trendingTopics, ...contentOpportunities].filter(item => item.monetization_score >= 80).length,\
+            mediumPotentialItems: [...trendingTopics, ...contentOpportunities].filter(item => item.monetization_score >= 60 && item.monetization_score < 80).length,\
+            lowPotentialItems: [...trendingTopics, ...contentOpportunities].filter(item => item.monetization_score < 60).length,\
+            // NEW: Affiliate integration\
+            affiliateEnhanced: !!affiliateResearchData,\
+            affiliateProfitabilityScore: affiliateProfitabilityScore,\
+            itemsWithAffiliateData: [...trendingTopics, ...contentOpportunities].filter(item => (item.affiliate_profitability_score || 0) > 0).length\
+        \},\
+        revenueBreakdown: \{\
+            topics: trendingTopics.reduce((sum, t) => \{\
+                const maxRevenue = parseInt(t.estimated_revenue_range.split(' - ')[1].replace(/[$,]/g, '')) || 0;\
+                return sum + maxRevenue;\
+            \}, 0),\
+            opportunities: contentOpportunities.reduce((sum, o) => \{\
+                const maxRevenue = parseInt(o.estimated_revenue_range.split(' - ')[1].replace(/[$,]/g, '')) || 0;\
+                return sum + maxRevenue;\
+            \}, 0)\
+        \},\
+        streamAnalysis: \{\
+            affiliate: [...trendingTopics, ...contentOpportunities]\
+                .filter(item => (item.monetization_streams || []).some(s => s.type === 'affiliate')).length,\
+            digital_product: [...trendingTopics, ...contentOpportunities]\
+                .filter(item => (item.monetization_streams || []).some(s => s.type === 'digital_product')).length,\
+            services: [...trendingTopics, ...contentOpportunities]\
+                .filter(item => (item.monetization_streams || []).some(s => s.type === 'services')).length,\
+            lead_generation: [...trendingTopics, ...contentOpportunities]\
+                .filter(item => (item.monetization_streams || []).some(s => s.type === 'lead_generation')).length\
+        \},\
+        // Enhanced top items with affiliate data\
+        topMonetizationItems: [...trendingTopics, ...contentOpportunities]\
+            .sort((a, b) => (b.monetization_score || 0) - (a.monetization_score || 0))\
+            .slice(0, 5)\
+            .map(item => (\{\
+                id: item.id,\
+                title: item.title || item.trend || item.opportunity,\
+                type: item.viral_potential ? 'topic' : 'opportunity',\
+                monetization_score: item.monetization_score,\
+                estimated_revenue_range: item.estimated_revenue_range,\
+                priority: item.monetization_priority,\
+                streams: item.monetization_streams.map(s => s.type),\
+                // NEW: Affiliate data\
+                affiliate_profitability_score: item.affiliate_profitability_score || 0,\
+                hasAffiliateData: (item.affiliate_profitability_score || 0) > 0,\
+                affiliateProfitabilityLevel: Utils.getProfitabilityLevel(item.affiliate_profitability_score || 0)\
+            \}))\
+    \};\
+\
+    // Enhanced Monetization Insights with Affiliate Recommendations\
+    const affiliateRecommendationList = affiliateRecommendations.length > 0 ? \
+        affiliateRecommendations.slice(0, 2).map(rec => (\{\
+            priority: 'high',\
+            title: 'Affiliate Opportunity',\
+            description: rec,\
+            action: 'Focus on high-commission affiliate products'\
+        \})) : [];\
+\
+    Outputs.MonetizationInsights = \{\
+        recommendations: [\
+            \{\
+                priority: 'high',\
+                title: 'Focus on High-Monetization Items',\
+                description: `$\{Outputs.MonetizationDashboard.overview.highPotentialItems\} items have 80+ monetization scores`,\
+                action: 'Select high-monetization items for immediate implementation'\
+            \},\
+            ...affiliateRecommendationList,\
+            \{\
+                priority: 'medium',\
+                title: 'Diversify Revenue Streams',\
+                description: 'Multiple monetization streams identified across your content',\
+                action: 'Implement affiliate marketing and digital products for best ROI'\
+            \},\
+            \{\
+                priority: 'low',\
+                title: 'Long-term Revenue Growth',\
+                description: 'Consider service offerings for premium pricing',\
+                action: 'Develop consulting or done-for-you services'\
+            \}\
+        ],\
+        quickWins: contentOpportunities\
+            .filter(o => o.monetization_score >= 70 && o.difficulty <= 40)\
+            .slice(0, 3)\
+            .map(o => (\{\
+                title: o.title,\
+                estimated_revenue: o.estimated_revenue_range,\
+                timeframe: '2-4 weeks',\
+                difficulty: 'Low',\
+                hasAffiliateData: (o.affiliate_profitability_score || 0) > 0\
+            \})),\
+        revenuePotential: \{\
+            immediate: totalEstimatedRevenue * 0.3,\
+            sixMonth: totalEstimatedRevenue * 0.7,\
+            annual: totalEstimatedRevenue\
+        \},\
+        // NEW: Affiliate-specific insights\
+        affiliateInsights: affiliateResearchData ? \{\
+            available: true,\
+            profitabilityScore: affiliateProfitabilityScore,\
+            level: Utils.getProfitabilityLevel(affiliateProfitabilityScore),\
+            offerCount: (affiliateResearchData.offers || []).length,\
+            topCategories: (affiliateResearchData.offers || [])\
+                .reduce((acc, offer) => \{\
+                    const category = offer.category || 'General';\
+                    acc[category] = (acc[category] || 0) + 1;\
+                    return acc;\
+                \}, \{\}),\
+            recommendations: affiliateRecommendations\
+        \} : \{ available: false \}\
+    \};\
+\
+    // ====================================================================\
+    // ENHANCED TABLE COLUMNS WITH AFFILIATE DATA\
+    // ====================================================================\
+\
+    Outputs.TrendingTopicsTableColumns = [\
+        \{ id: 'selected', Label: 'Select', Width: '4%', Field: 'selected', Editable: true, Type: "Boolean" \},\
+        \{ id: 'rank', Label: '#', Width: '3%', Field: 'rank', Editable: false, Type: "String", Sortable: true \},\
+        \{ id: 'topic', Label: 'Trending Topic', Width: '18%', Field: 'topic', Sortable: true, Editable: false, Type: "String", Searchable: true \},\
+        \{ id: 'viralScoreDisplay', Label: 'Viral Potential', Width: '10%', Field: 'viralScoreDisplay', Editable: false, Type: "String", Sortable: true, SortField: 'viralScore' \},\
+        // Enhanced monetization columns\
+        \{ id: 'monetizationScoreDisplay', Label: 'Monetization', Width: '10%', Field: 'monetizationScoreDisplay', Editable: false, Type: "String", Sortable: true, SortField: 'monetization_score' \},\
+        // NEW: Affiliate column\
+        \{ id: 'affiliateScoreDisplay', Label: 'Affiliate Score', Width: '10%', Field: 'affiliateScoreDisplay', Editable: false, Type: "String", Sortable: true, SortField: 'affiliate_profitability_score' \},\
+        \{ id: 'revenueRange', Label: 'Revenue Range', Width: '11%', Field: 'revenueRange', Editable: false, Type: "String" \},\
+        \{ id: 'opportunityLevel', Label: 'Opportunity', Width: '9%', Field: 'opportunityLevel', Editable: false, Type: "String", Sortable: true, SortField: 'opportunityScore' \},\
+        \{ id: 'searchVolume', Label: 'Search Volume', Width: '8%', Field: 'searchVolume', Editable: false, Type: "String", Filterable: true, FilterOptions: ['All', 'High', 'Medium', 'Low'] \},\
+        \{ id: 'competition', Label: 'Competition', Width: '8%', Field: 'competition', Editable: false, Type: "String", Filterable: true, FilterOptions: ['All', 'Low', 'Medium', 'High'] \},\
+        \{ id: 'primaryKeywords', Label: 'Top Keywords', Width: '9%', Editable: false, Type: "String", Field: 'primaryKeywords' \}\
+    ];\
+\
+    Outputs.ContentOpportunitiesTableColumns = [\
+        \{ id: 'selected', Label: 'Select', Width: '4%', Field: 'selected', Editable: true, Type: "Boolean" \},\
+        \{ id: 'rank', Label: '#', Width: '3%', Field: 'rank', Sortable: true, Editable: false, Type: "String" \},\
+        \{ id: 'title', Label: 'Content Opportunity', Width: '20%', Field: 'title', Sortable: true, Searchable: true, Editable: false, Type: "String" \},\
+        \{ id: 'formatWithIcon', Label: 'Content Type', Width: '10%', Field: 'formatWithIcon', Filterable: true, FilterField: 'format', Editable: false, Type: "String" \},\
+        // Enhanced monetization columns\
+        \{ id: 'monetizationScoreDisplay', Label: 'Monetization', Width: '10%', Field: 'monetizationScoreDisplay', Editable: false, Type: "String", Sortable: true, SortField: 'monetization_score' \},\
+        // NEW: Affiliate column\
+        \{ id: 'affiliateScoreDisplay', Label: 'Affiliate Score', Width: '10%', Field: 'affiliateScoreDisplay', Editable: false, Type: "String", Sortable: true, SortField: 'affiliate_profitability_score' \},\
+        \{ id: 'revenueRange', Label: 'Revenue Range', Width: '11%', Field: 'revenueRange', Editable: false, Type: "String" \},\
+        \{ id: 'engagementPotential', Label: 'Engagement', Width: '8%', Field: 'engagementPotential', Filterable: true, FilterOptions: ['All', 'High', 'Medium', 'Low'], Editable: false, Type: "String" \},\
+        \{ id: 'difficultyDisplay', Label: 'Difficulty', Width: '10%', Field: 'difficultyDisplay', Sortable: true, SortField: 'difficulty', Editable: false, Type: "String" \},\
+        \{ id: 'timeInvestment', Label: 'Time Investment', Width: '10%', Field: 'timeInvestment', Filterable: true, FilterOptions: ['All', '1-2 weeks', '2-3 weeks', '3-4 weeks', '1+ month'], Editable: false, Type: "String" \}\
+    ];\
+\
+    // ====================================================================\
+    // ENHANCED FILTERS WITH AFFILIATE OPTIONS\
+    // ====================================================================\
+\
+    // Enhanced Topics Filters with Affiliate Support\
+    Outputs.TopicsFilters = \{\
+        viralPotential: \{\
+            label: 'Viral Potential',\
+            options: ['All', 'High (80+)', 'Medium (60-79)', 'Low (<60)'],\
+            current: filterSettings.viralPotential || 'All'\
+        \},\
+        monetizationScore: \{\
+            label: 'Monetization Score',\
+            options: ['All', 'High (70+)', 'Medium (50-69)', 'Low (<50)'],\
+            current: filterSettings.monetizationScore || 'All'\
+        \},\
+        // NEW: Affiliate filter\
+        affiliateScore: \{\
+            label: 'Affiliate Score',\
+            options: ['All', 'Excellent (70+)', 'Good (50-69)', 'Moderate (30-49)', 'Poor (<30)', 'No Data'],\
+            current: filterSettings.affiliateScore || 'All'\
+        \},\
+        searchVolume: \{\
+            label: 'Search Volume',\
+            options: ['All', 'High', 'Medium', 'Low'],\
+            current: filterSettings.searchVolume || 'All'\
+        \},\
+        competition: \{\
+            label: 'Competition',\
+            options: ['All', 'Low', 'Medium', 'High'],\
+            current: filterSettings.competition || 'All'\
+        \},\
+        selected: \{\
+            label: 'Selection Status',\
+            options: ['All', 'Selected', 'Not Selected'],\
+            current: filterSettings.selected || 'All'\
+        \},\
+        quickFilters: [\
+            \{ id: 'all', label: 'All Topics', count: trendingTopics.length, active: !filterSettings.quickFilter || filterSettings.quickFilter === 'all' \},\
+            \{ id: 'highPotential', label: 'High Potential (80+)', count: trendingTopics.filter(t => t.viral_potential >= 80).length, active: filterSettings.quickFilter === 'highPotential' \},\
+            \{ id: 'highMonetization', label: 'High Monetization (70+)', count: trendingTopics.filter(t => (t.monetization_score || 0) >= 70).length, active: filterSettings.quickFilter === 'highMonetization' \},\
+            // NEW: Affiliate quick filter\
+            \{ id: 'highAffiliate', label: 'High Affiliate (70+)', count: trendingTopics.filter(t => (t.affiliate_profitability_score || 0) >= 70).length, active: filterSettings.quickFilter === 'highAffiliate' \},\
+            \{ id: 'quickWins', label: 'Quick Wins', count: trendingTopics.filter(t => t.viral_potential >= 60 && t.competition === 'Low').length, active: filterSettings.quickFilter === 'quickWins' \},\
+            \{ id: 'selected', label: 'Selected', count: trendingTopics.filter(t => t.selected).length, active: filterSettings.quickFilter === 'selected' \}\
+        ]\
+    \};\
+\
+    // Enhanced Opportunities Filters with Affiliate Support\
+    Outputs.OpportunitiesFilters = \{\
+        format: \{\
+            label: 'Content Format',\
+            options: ['All', 'Blog Post', 'Video', 'Podcast', 'Course', 'Guide', 'Checklist', 'Template'],\
+            current: filterSettings.format || 'All'\
+        \},\
+        engagement: \{\
+            label: 'Engagement Potential',\
+            options: ['All', 'High', 'Medium', 'Low'],\
+            current: filterSettings.engagement || 'All'\
+        \},\
+        monetizationScore: \{\
+            label: 'Monetization Score',\
+            options: ['All', 'High (70+)', 'Medium (50-69)', 'Low (<50)'],\
+            current: filterSettings.monetizationScore || 'All'\
+        \},\
+        // NEW: Affiliate filter\
+        affiliateScore: \{\
+            label: 'Affiliate Score',\
+            options: ['All', 'Excellent (70+)', 'Good (50-69)', 'Moderate (30-49)', 'Poor (<30)', 'No Data'],\
+            current: filterSettings.affiliateScore || 'All'\
+        \},\
+        difficulty: \{\
+            label: 'Difficulty Level',\
+            options: ['All', 'Beginner', 'Intermediate', 'Advanced', 'Expert'],\
+            current: filterSettings.difficulty || 'All'\
+        \},\
+        timeInvestment: \{\
+            label: 'Time Investment',\
+            options: ['All', '1-2 weeks', '2-3 weeks', '3-4 weeks', '1+ month'],\
+            current: filterSettings.timeInvestment || 'All'\
+        \},\
+        selected: \{\
+            label: 'Selection Status',\
+            options: ['All', 'Selected', 'Not Selected'],\
+            current: filterSettings.selected || 'All'\
+        \},\
+        quickFilters: [\
+            \{ id: 'all', label: 'All Opportunities', count: contentOpportunities.length, active: !filterSettings.quickFilter || filterSettings.quickFilter === 'all' \},\
+            \{ id: 'quickWins', label: 'Quick Wins', count: contentOpportunities.filter(o => o.difficulty <= 40 && o.engagement_potential === 'High').length, active: filterSettings.quickFilter === 'quickWins' \},\
+            \{ id: 'highValue', label: 'High Value (50+)', count: contentOpportunities.filter(o => (o.overallScore || 0) >= 50).length, active: filterSettings.quickFilter === 'highValue' \},\
+            \{ id: 'highMonetization', label: 'High Monetization (70+)', count: contentOpportunities.filter(o => (o.monetization_score || 0) >= 70).length, active: filterSettings.quickFilter === 'highMonetization' \},\
+            // NEW: Affiliate quick filter\
+            \{ id: 'highAffiliate', label: 'High Affiliate (70+)', count: contentOpportunities.filter(o => (o.affiliate_profitability_score || 0) >= 70).length, active: filterSettings.quickFilter === 'highAffiliate' \},\
+            \{ id: 'selected', label: 'Selected', count: contentOpportunities.filter(o => o.selected).length, active: filterSettings.quickFilter === 'selected' \}\
+        ]\
+    \};\
+\
+    // Quick Filters for Topics\
+    Outputs.topicQuickFilters = [\
+        \{ id: 'all', label: 'All Topics', count: trendingTopics.length, active: !filterSettings.quickFilter || filterSettings.quickFilter === 'all' \},\
+        \{ id: 'highPotential', label: 'High Potential (80+)', count: trendingTopics.filter(t => t.viral_potential >= 80).length, active: filterSettings.quickFilter === 'highPotential' \},\
+        \{ id: 'highMonetization', label: 'High Monetization (70+)', count: trendingTopics.filter(t => (t.monetization_score || 0) >= 70).length, active: filterSettings.quickFilter === 'highMonetization' \},\
+        // NEW: Affiliate quick filter\
+        \{ id: 'highAffiliate', label: 'High Affiliate (70+)', count: trendingTopics.filter(t => (t.affiliate_profitability_score || 0) >= 70).length, active: filterSettings.quickFilter === 'highAffiliate' \},\
+        \{ id: 'quickWins', label: 'Quick Wins', count: trendingTopics.filter(t => t.viral_potential >= 60 && t.competition === 'Low').length, active: filterSettings.quickFilter === 'quickWins' \},\
+        \{ id: 'selected', label: 'Selected', count: trendingTopics.filter(t => t.selected).length, active: filterSettings.quickFilter === 'selected' \}\
+    ];\
+\
+    // Quick Filters for Opportunities\
+    Outputs.opportunityQuickFilters = [\
+        \{ id: 'all', label: 'All Opportunities', count: contentOpportunities.length, active: !filterSettings.quickFilter || filterSettings.quickFilter === 'all' \},\
+        \{ id: 'quickWins', label: 'Quick Wins', count: contentOpportunities.filter(o => o.difficulty <= 40 && o.engagement_potential === 'High').length, active: filterSettings.quickFilter === 'quickWins' \},\
+        \{ id: 'highValue', label: 'High Value (50+)', count: contentOpportunities.filter(o => (o.overallScore || 0) >= 50).length, active: filterSettings.quickFilter === 'highValue' \},\
+        \{ id: 'highMonetization', label: 'High Monetization (70+)', count: contentOpportunities.filter(o => (o.monetization_score || 0) >= 70).length, active: filterSettings.quickFilter === 'highMonetization' \},\
+        // NEW: Affiliate quick filter\
+        \{ id: 'highAffiliate', label: 'High Affiliate (70+)', count: contentOpportunities.filter(o => (o.affiliate_profitability_score || 0) >= 70).length, active: filterSettings.quickFilter === 'highAffiliate' \},\
+        \{ id: 'selected', label: 'Selected', count: contentOpportunities.filter(o => o.selected).length, active: filterSettings.quickFilter === 'selected' \}\
+    ]\
+\
+    // Enhanced Tab Navigation with Affiliate Tab\
+    Outputs.TabNavigation = \{\
+        currentTab: currentTab,\
+        tabs: [\
+            \{ id: 'overview', label: 'Overview', badge: '', active: currentTab === 'overview', icon: '\uc0\u55357 \u56522 ' \},\
+            \{ id: 'topics', label: 'Topics', badge: trendingTopics.filter(t => t.selected).length > 0 ? `($\{trendingTopics.filter(t => t.selected).length\}/$\{trendingTopics.length\})` : `($\{trendingTopics.length\})`, active: currentTab === 'topics', icon: '\uc0\u55357 \u56520 ' \},\
+            \{ id: 'opportunities', label: 'Opportunities', badge: contentOpportunities.filter(o => o.selected).length > 0 ? `($\{contentOpportunities.filter(o => o.selected).length\}/$\{contentOpportunities.length\})` : `($\{contentOpportunities.length\})`, active: currentTab === 'opportunities', icon: '\uc0\u55357 \u56481 ' \},\
+            // NEW: Affiliate tab\
+            \{ id: 'affiliate', label: 'Affiliate Research', badge: affiliateProfitabilityScore > 0 ? `$\{affiliateProfitabilityScore\}%` : '', active: currentTab === 'affiliate', icon: '\uc0\u55357 \u56496 ' \},\
+            \{ id: 'monetization', label: 'Monetization', badge: `$\{Math.round(totalEstimatedRevenue / 1000)\}K`, active: currentTab === 'monetization', icon: '\uc0\u55357 \u56501 ' \},\
+            \{ id: 'geography', label: 'Geography', badge: '', active: currentTab === 'geography', icon: '\uc0\u55356 \u57101 ' \},\
+            \{ id: 'actionItems', label: 'Action Items', badge: '', active: currentTab === 'actionItems', icon: '\uc0\u9989 ' \},\
+            \{ id: 'contentStrategy', label: 'Content Strategy', badge: '', active: currentTab === 'contentStrategy', icon: '\uc0\u55357 \u56523 ' \}\
+        ]\
+    \};\
+\
+    // ====================================================================\
+    // ENHANCED QUICK ACTIONS WITH AFFILIATE-AWARE SELECTIONS\
+    // ====================================================================\
+    \
+    // Enhanced Quick Actions with Affiliate Integration\
+    Outputs.QuickActions = \{\
+        smartSelect: \{\
+            enabled: trendingTopics.length > 0 || contentOpportunities.length > 0,\
+            label: 'Smart Selection',\
+            description: 'Auto-select top 3 viral topics + 2 high-monetization opportunities',\
+            icon: '\uc0\u55356 \u57263 ',\
+            count: Math.min(3, trendingTopics.length) + Math.min(2, contentOpportunities.filter(o => (o.monetization_score || 0) >= 60).length)\
+        \},\
+        selectHighPotential: \{\
+            enabled: trendingTopics.filter(t => t.viral_potential >= 70).length > 0,\
+            label: 'High Potential Only',\
+            description: 'Select topics with 70+ viral score',\
+            icon: '\uc0\u55357 \u56613 ',\
+            count: trendingTopics.filter(t => t.viral_potential >= 70).length\
+        \},\
+        selectQuickWins: \{\
+            enabled: contentOpportunities.filter(o => o.difficulty <= 40 && o.engagement_potential === 'High').length > 0,\
+            label: 'Quick Wins',\
+            description: 'Select low-difficulty, high-engagement opportunities',\
+            icon: '\uc0\u9889 ',\
+            count: contentOpportunities.filter(o => o.difficulty <= 40 && o.engagement_potential === 'High').length\
+        \},\
+        // NEW: Affiliate-enhanced actions\
+        selectHighAffiliate: \{\
+            enabled: [...trendingTopics, ...contentOpportunities].filter(item => (item.affiliate_profitability_score || 0) >= 70).length > 0,\
+            label: 'High Affiliate Profit',\
+            description: 'Select items with 70+ affiliate profitability',\
+            icon: '\uc0\u55357 \u56496 ',\
+            count: [...trendingTopics, ...contentOpportunities].filter(item => (item.affiliate_profitability_score || 0) >= 70).length\
+        \},\
+        selectHighMonetization: \{\
+            enabled: [...trendingTopics, ...contentOpportunities].filter(item => (item.monetization_score || 0) >= 70).length > 0,\
+            label: 'High Monetization',\
+            description: 'Select items with 70+ total monetization score',\
+            icon: '\uc0\u55357 \u56501 ',\
+            count: [...trendingTopics, ...contentOpportunities].filter(item => (item.monetization_score || 0) >= 70).length\
+        \},\
+        selectRevenueFocused: \{\
+            enabled: [...trendingTopics, ...contentOpportunities].length > 0,\
+            label: 'Revenue Focused',\
+            description: 'Select top 5 highest revenue potential items',\
+            icon: '\uc0\u55357 \u56462 ',\
+            count: Math.min(5, [...trendingTopics, ...contentOpportunities].length)\
+        \},\
+        selectAllTopics: \{\
+            enabled: trendingTopics.length > 0,\
+            label: 'All Topics',\
+            description: `Select all $\{trendingTopics.length\} trending topics`,\
+            icon: '\uc0\u55357 \u56520 ',\
+            count: trendingTopics.length\
+        \},\
+        selectAllOpportunities: \{\
+            enabled: contentOpportunities.length > 0,\
+            label: 'All Opportunities',\
+            description: `Select all $\{contentOpportunities.length\} content opportunities`,\
+            icon: '\uc0\u55357 \u56481 ',\
+            count: contentOpportunities.length\
+        \},\
+        clearAll: \{\
+            enabled: (trendingTopics.filter(t => t.selected).length + contentOpportunities.filter(o => o.selected).length) > 0,\
+            label: 'Clear All',\
+            description: 'Remove all selections',\
+            icon: '\uc0\u55357 \u56785 \u65039 ',\
+            count: trendingTopics.filter(t => t.selected).length + contentOpportunities.filter(o => o.selected).length\
+        \}\
+    \};\
+\
+    // ====================================================================\
+    // ENHANCED PYTRENDS OUTPUTS (EXISTING LOGIC)\
+    // ====================================================================\
+\
+    if (pytrendsAvailable) \{\
+        const urgentActions = actionableInsights.filter(insight => insight.priority === 'high');\
+        const timingSuggestions = actionableInsights.filter(insight => insight.type === 'timing');\
+        const geographicOpportunities = actionableInsights.filter(insight => \
+            insight.type === 'targeting' || insight.type === 'geographic'\
+        );\
+        \
+        Outputs.PyTrendsInsights = \{\
+            available: true,\
+            mainTopicAnalysis: \{\
+                currentInterest,\
+                trendDirection,\
+                momentum,\
+                peakInterest,\
+                recommendation,\
+                growthPotential\
+            \},\
+            geographicHotspots,\
+            seasonalPatterns: \{\
+                hasPattern: seasonalPatterns.has_seasonal_pattern || false,\
+                peakMonths: seasonalPatterns.peak_months || [],\
+                nextPeak: seasonalPatterns.next_peak_prediction || null\
+            \},\
+            relatedQueries: \{\
+                topQueries: relatedQueries.top_related_queries || [],\
+                risingQueries: relatedQueries.rising_queries || []\
+            \},\
+            actionableInsights\
+        \};\
+        \
+        Outputs.GoogleTrendsOverview = \{\
+            available: true,\
+            currentScore: currentInterest,\
+            trendDirection,\
+            momentum,\
+            topMarket: geographicHotspots.length > 0 ? geographicHotspots[0].country : "Unknown",\
+            nextPeakTiming: seasonalPatterns.next_peak_prediction ? seasonalPatterns.next_peak_prediction.month : null,\
+            hasData: true,\
+            growthPotential\
+        \};\
+        \
+        Outputs.ActionableInsightsPanel = \{\
+            urgentActions,\
+            timingSuggestions,\
+            geographicOpportunities,\
+            hasUrgentActions: urgentActions.length > 0,\
+            available: true\
+        \};\
+        \
+    \} else \{\
+        // Empty PyTrends structure (fallback)\
+        Outputs.PyTrendsInsights = \{\
+            available: false,\
+            mainTopicAnalysis: \{\
+                currentInterest: 0,\
+                trendDirection: "unknown",\
+                momentum: 0,\
+                peakInterest: 0,\
+                recommendation: "PyTrends data not available"\
+            \},\
+            geographicHotspots: [],\
+            seasonalPatterns: \{ hasPattern: false, peakMonths: [], nextPeak: null \},\
+            relatedQueries: \{ topQueries: [], risingQueries: [] \},\
+            actionableInsights: []\
+        \};\
+        \
+        Outputs.GoogleTrendsOverview = \{\
+            available: false,\
+            currentScore: 0,\
+            trendDirection: "unknown",\
+            momentum: 0,\
+            topMarket: "Unknown",\
+            nextPeakTiming: null,\
+            hasData: false\
+        \};\
+        \
+        Outputs.ActionableInsightsPanel = \{\
+            urgentActions: [],\
+            timingSuggestions: [],\
+            geographicOpportunities: [],\
+            hasUrgentActions: false,\
+            available: false\
+        \};\
+    \}\
+\
+    // ====================================================================\
+    // ENHANCED RAW DATA OUTPUTS\
+    // ====================================================================\
+    \
+    Outputs.TrendingTopicsList = transformedTrendingTopics;\
+    Outputs.ContentOpportunitiesList = transformedOpportunities;\
+\
+    const transformedKeywordIntelligence = \{\
+        high_volume_keywords: keywordIntelligence.high_volume_keywords || [],\
+        low_competition_keywords: keywordIntelligence.low_competition_keywords || [],\
+        emerging_keywords: keywordIntelligence.emerging_keywords || [],\
+        keyword_clusters: Utils.safeGet(keywordIntelligence, 'additional_data.keyword_clusters', \{\})\
+    \};\
+\
+    Outputs.SEOIntelligence = transformedKeywordIntelligence;\
+    Outputs.HighVolumeKeywords = transformedKeywordIntelligence.high_volume_keywords;\
+    Outputs.LowCompetitionKeywords = transformedKeywordIntelligence.low_competition_keywords;\
+    Outputs.EmergingKeywords = transformedKeywordIntelligence.emerging_keywords;\
+    Outputs.KeywordClusters = transformedKeywordIntelligence.keyword_clusters;\
+\
+    // Enhanced Competitive Analysis with Affiliate Data\
+    const mockCompetitiveGaps = \{\
+        analysis: affiliateResearchData ? \
+            `Significant monetization opportunities exist with $\{affiliateResearchData.offers?.length || 0\} affiliate offers available.` :\
+            "Comprehensive competitive analysis with monetization focus.",\
+        weaknesses: [\
+            "Most content lacks clear monetization strategy",\
+            affiliateResearchData ? "Limited leverage of available affiliate opportunities" : "Limited affiliate marketing integration",\
+            "Lack of product recommendation frameworks"\
+        ],\
+        niches: [\
+            `$\{analysisInfo.topic\} monetization strategies`,\
+            `Revenue-generating $\{analysisInfo.topic\} content`,\
+            affiliateResearchData ? `$\{analysisInfo.topic\} affiliate reviews and comparisons` : `$\{analysisInfo.topic\} affiliate opportunities`\
+        ],\
+        // NEW: Affiliate-specific gaps\
+        affiliateGaps: affiliateResearchData ? [\
+            "Limited high-converting affiliate content",\
+            "Opportunity for comprehensive product reviews",\
+            "Underutilized affiliate network partnerships"\
+        ] : [\
+            "No affiliate research data available",\
+            "Consider running affiliate opportunity analysis",\
+            "Potential for affiliate marketing exists"\
+        ]\
+    \};\
+\
+    Outputs.CompetitiveAnalysis = mockCompetitiveGaps;\
+    Outputs.ContentGaps = [mockCompetitiveGaps.analysis];\
+    Outputs.CompetitorWeaknesses = mockCompetitiveGaps.weaknesses;\
+    Outputs.UntappedNiches = mockCompetitiveGaps.niches;\
+\
+    // ====================================================================\
+    // ENHANCED FILTERING AND PROCESSING WITH AFFILIATE SUPPORT\
+    // ====================================================================\
+\
+    // Enhanced filter processing function\
+    const processQuickFilters = (filterType, filterValue, targetTable) => \{\
+        console.log(`\uc0\u55356 \u57263  Processing quick filter: $\{filterType\}=$\{filterValue\} for $\{targetTable\}`);\
+        \
+        const quickFilterMap = \{\
+            topics: \{\
+                all: () => (\{\}),\
+                highPotential: () => (\{ viralPotential: 'High (80+)' \}),\
+                highMonetization: () => (\{ monetizationScore: 'High (70+)' \}),\
+                highAffiliate: () => (\{ affiliateScore: 'Excellent (70+)' \}), // NEW\
+                quickWins: () => (\{ viralPotential: 'Medium (60-79)', competition: 'Low' \}),\
+                selected: () => (\{ selected: 'Selected' \})\
+            \},\
+            opportunities: \{\
+                all: () => (\{\}),\
+                quickWins: () => (\{ difficulty: 'Beginner', engagement: 'High' \}),\
+                highValue: () => (\{ engagement: 'High' \}),\
+                highMonetization: () => (\{ monetizationScore: 'High (70+)' \}),\
+                highAffiliate: () => (\{ affiliateScore: 'Excellent (70+)' \}), // NEW\
+                selected: () => (\{ selected: 'Selected' \})\
+            \}\
+        \};\
+\
+        return quickFilterMap[targetTable]?.[filterValue]?.() || \{\};\
+    \};\
+\
+    // Handle quick filter inputs from buttons\
+    let enhancedFilterSettings = \{ ...filterSettings \};\
+    \
+    // Check for quick filter inputs\
+    if (Inputs.filterType === 'quickFilter' && Inputs.filterValue && Inputs.targetTable) \{\
+        const quickFilterSettings = processQuickFilters(\
+            Inputs.filterType,\
+            Inputs.filterValue,\
+            Inputs.targetTable\
+        );\
+        enhancedFilterSettings = \{ ...enhancedFilterSettings, ...quickFilterSettings, quickFilter: Inputs.filterValue \};\
+        console.log(`\uc0\u9989  Applied quick filter:`, quickFilterSettings);\
+    \}\
+\
+    // Enhanced Filter Processing Function with Affiliate Support\
+    const applyFilters = (data, filters, type) => \{\
+        if (!Array.isArray(data)) \{\
+            console.warn('\uc0\u9888 \u65039  applyFilters: data is not an array, returning empty array');\
+            return [];\
+        \}\
+        \
+        let filteredData = [...data];\
+        \
+        if (type === 'topics') \{\
+            if (filters.viralPotential && filters.viralPotential !== 'All') \{\
+                const match = filters.viralPotential.match(/(\\d+)/);\
+                const minScore = match ? parseInt(match[1]) : 0;\
+                filteredData = filteredData.filter(t => (t.viral_potential || 0) >= minScore);\
+            \}\
+            if (filters.monetizationScore && filters.monetizationScore !== 'All') \{\
+                const match = filters.monetizationScore.match(/(\\d+)/);\
+                const minScore = match ? parseInt(match[1]) : 0;\
+                filteredData = filteredData.filter(t => (t.monetization_score || 0) >= minScore);\
+            \}\
+            // NEW: Affiliate filter\
+            if (filters.affiliateScore && filters.affiliateScore !== 'All') \{\
+                if (filters.affiliateScore === 'No Data') \{\
+                    filteredData = filteredData.filter(t => (t.affiliate_profitability_score || 0) === 0);\
+                \} else \{\
+                    const match = filters.affiliateScore.match(/(\\d+)/);\
+                    const minScore = match ? parseInt(match[1]) : 0;\
+                    filteredData = filteredData.filter(t => (t.affiliate_profitability_score || 0) >= minScore);\
+                \}\
+            \}\
+            if (filters.searchVolume && filters.searchVolume !== 'All') \{\
+                filteredData = filteredData.filter(t => t.search_volume === filters.searchVolume);\
+            \}\
+            if (filters.competition && filters.competition !== 'All') \{\
+                filteredData = filteredData.filter(t => t.competition === filters.competition);\
+            \}\
+            if (filters.selected && filters.selected !== 'All') \{\
+                const selectedOnly = filters.selected === 'Selected';\
+                filteredData = filteredData.filter(t => t.selected === selectedOnly);\
+            \}\
+        \} else if (type === 'opportunities') \{\
+            if (filters.format && filters.format !== 'All') \{\
+                const formatKey = filters.format.toLowerCase().replace(/ /g, '_');\
+                filteredData = filteredData.filter(o => o.format === formatKey);\
+            \}\
+            if (filters.engagement && filters.engagement !== 'All') \{\
+                filteredData = filteredData.filter(o => o.engagement_potential === filters.engagement);\
+            \}\
+            if (filters.monetizationScore && filters.monetizationScore !== 'All') \{\
+                const match = filters.monetizationScore.match(/(\\d+)/);\
+                const minScore = match ? parseInt(match[1]) : 0;\
+                filteredData = filteredData.filter(o => (o.monetization_score || 0) >= minScore);\
+            \}\
+            // NEW: Affiliate filter\
+            if (filters.affiliateScore && filters.affiliateScore !== 'All') \{\
+                if (filters.affiliateScore === 'No Data') \{\
+                    filteredData = filteredData.filter(o => (o.affiliate_profitability_score || 0) === 0);\
+                \} else \{\
+                    const match = filters.affiliateScore.match(/(\\d+)/);\
+                    const minScore = match ? parseInt(match[1]) : 0;\
+                    filteredData = filteredData.filter(o => (o.affiliate_profitability_score || 0) >= minScore);\
+                \}\
+            \}\
+            if (filters.difficulty && filters.difficulty !== 'All') \{\
+                const difficultyMap = \{\
+                    'Beginner': [0, 40],\
+                    'Intermediate': [41, 60],\
+                    'Advanced': [61, 80],\
+                    'Expert': [81, 100]\
+                \};\
+                const [min, max] = difficultyMap[filters.difficulty] || [0, 100];\
+                filteredData = filteredData.filter(o => (o.difficulty || 0) >= min && (o.difficulty || 0) <= max);\
+            \}\
+            if (filters.timeInvestment && filters.timeInvestment !== 'All') \{\
+                filteredData = filteredData.filter(o => \
+                    Utils.safeGet(o, 'additional_data.time_investment', "2-3 weeks") === filters.timeInvestment\
+                );\
+            \}\
+            if (filters.selected && filters.selected !== 'All') \{\
+                const selectedOnly = filters.selected === 'Selected';\
+                filteredData = filteredData.filter(o => o.selected === selectedOnly);\
+            \}\
+        \}\
+        \
+        return filteredData;\
+    \};\
+\
+    // Apply filters for overview metrics\
+    const overviewFilteredTopics = applyFilters(trendingTopics, enhancedFilterSettings, 'topics');\
+    const overviewFilteredOpportunities = applyFilters(contentOpportunities, enhancedFilterSettings, 'opportunities');\
+    \
+    if (currentTab === "overview") \{\
+        Outputs.OverviewMetrics = \{\
+            totalTopics: trendingTopics.length,\
+            totalOpportunities: contentOpportunities.length,\
+            filteredTopics: overviewFilteredTopics.length,\
+            filteredOpportunities: overviewFilteredOpportunities.length,\
+            selectedTopics: trendingTopics.filter(t => t.selected).length,\
+            selectedOpportunities: contentOpportunities.filter(o => o.selected).length,\
+            confidenceScore: Utils.safeGet(analysisInfo, 'metadata.confidence_score', 85),\
+            readyForPhase2: (trendingTopics.filter(t => t.selected).length > 0 || contentOpportunities.filter(o => o.selected).length > 0),\
+            selectionProgress: Math.round(((trendingTopics.filter(t => t.selected).length + contentOpportunities.filter(o => o.selected).length) / Math.max(trendingTopics.length + contentOpportunities.length, 1)) * 100),\
+            topicSelectionRate: Math.round((trendingTopics.filter(t => t.selected).length / Math.max(trendingTopics.length, 1)) * 100),\
+            opportunitySelectionRate: Math.round((contentOpportunities.filter(o => o.selected).length / Math.max(contentOpportunities.length, 1)) * 100),\
+            // Enhanced monetization metrics with affiliate data\
+            totalEstimatedRevenue: totalEstimatedRevenue,\
+            avgMonetizationScore: Outputs.MarketTrendSummary.avgMonetizationScore,\
+            highMonetizationItems: [...trendingTopics, ...contentOpportunities].filter(item => (item.monetization_score || 0) >= 70).length,\
+            selectedMonetizationPotential: [...trendingTopics.filter(t => t.selected), ...contentOpportunities.filter(o => o.selected)]\
+                .reduce((sum, item) => \{\
+                    const maxRevenue = parseInt(item.estimated_revenue_range.split(' - ')[1].replace(/[$,]/g, '')) || 0;\
+                    return sum + maxRevenue;\
+                \}, 0),\
+            // NEW: Affiliate-specific metrics\
+            affiliateResearchAvailable: !!affiliateResearchData,\
+            affiliateProfitabilityScore: affiliateProfitabilityScore,\
+            affiliateOfferCount: affiliateResearchData ? (affiliateResearchData.offers || []).length : 0,\
+            highAffiliateItems: [...trendingTopics, ...contentOpportunities].filter(item => (item.affiliate_profitability_score || 0) >= 70).length,\
+            // Filtered metrics\
+            filterApplied: enhancedFilterSettings.quickFilter || Object.keys(enhancedFilterSettings).some(key => \
+                key !== 'quickFilter' && enhancedFilterSettings[key] !== 'All' && enhancedFilterSettings[key]\
+            ),\
+            activeFilters: Object.keys(enhancedFilterSettings).filter(key => \
+                enhancedFilterSettings[key] && enhancedFilterSettings[key] !== 'All'\
+            ).length\
+        \};\
+\
+        // Enhanced Top items preview with affiliate data\
+        Outputs.TopTrendingTopics = transformedTrendingTopics\
+            .sort((a, b) => b.viral_potential - a.viral_potential)\
+            .slice(0, 3)\
+            .map(topic => (\{\
+                title: topic.trend,\
+                viralScore: topic.viral_potential,\
+                viralScoreColor: Utils.getViralScoreColor(topic.viral_potential),\
+                viralScoreIcon: Utils.getViralScoreIcon(topic.viral_potential),\
+                keywordsPreview: topic.keywords.slice(0, 3).join(', '),\
+                selected: topic.selected,\
+                id: topic.id,\
+                // Enhanced monetization data with affiliate info\
+                monetizationScore: topic.monetization_score,\
+                monetizationIcon: topic.monetizationIcon,\
+                monetizationColor: topic.monetizationColor,\
+                revenueRange: topic.estimated_revenue_range,\
+                // NEW: Affiliate data\
+                affiliateProfitabilityScore: topic.affiliate_profitability_score || 0,\
+                hasAffiliateData: (topic.affiliate_profitability_score || 0) > 0,\
+                affiliateProfitabilityLevel: topic.affiliateProfitabilityLevel || 'Unknown'\
+            \}));\
+\
+        Outputs.TopOpportunities = transformedOpportunities\
+            .sort((a, b) => b.overallScore - a.overallScore)\
+            .slice(0, 3)\
+            .map(opp => (\{\
+                title: opp.opportunity,\
+                format: opp.format.replace(/_/g, ' ').toUpperCase(),\
+                formatIcon: Utils.getContentFormatIcon(opp.format),\
+                engagementPotential: opp.engagement_potential,\
+                difficultyLevel: Utils.getDifficultyLevel(opp.difficulty),\
+                difficultyColor: Utils.getDifficultyColor(opp.difficulty),\
+                selected: opp.selected,\
+                id: opp.id,\
+                // Enhanced monetization data with affiliate info\
+                monetizationScore: opp.monetization_score,\
+                monetizationIcon: opp.monetizationIcon,\
+                monetizationColor: opp.monetizationColor,\
+                revenueRange: opp.estimated_revenue_range,\
+                // NEW: Affiliate data\
+                affiliateProfitabilityScore: opp.affiliate_profitability_score || 0,\
+                hasAffiliateData: (opp.affiliate_profitability_score || 0) > 0,\
+                affiliateProfitabilityLevel: opp.affiliateProfitabilityLevel || 'Unknown'\
+            \}));\
+\
+        // Enhanced Top Monetization Opportunities with Affiliate Weighting\
+        Outputs.TopMonetizationOpportunities = [...transformedTrendingTopics, ...transformedOpportunities]\
+            .sort((a, b) => \{\
+                // Weight affiliate profitability higher in sorting\
+                const scoreA = (a.monetization_score || 0) + (a.affiliate_profitability_score || 0) * 0.3;\
+                const scoreB = (b.monetization_score || 0) + (b.affiliate_profitability_score || 0) * 0.3;\
+                return scoreB - scoreA;\
+            \})\
+            .slice(0, 3)\
+            .map(item => (\{\
+                title: item.trend || item.opportunity,\
+                type: item.trend ? 'topic' : 'opportunity',\
+                monetizationScore: item.monetization_score,\
+                monetizationIcon: item.monetizationIcon,\
+                monetizationColor: item.monetizationColor,\
+                revenueRange: item.estimated_revenue_range,\
+                priority: item.monetization_priority,\
+                topStream: item.monetization_streams.length > 0 ? item.monetization_streams[0].type : 'None',\
+                selected: item.selected,\
+                id: item.id,\
+                // NEW: Affiliate data\
+                affiliateProfitabilityScore: item.affiliate_profitability_score || 0,\
+                hasAffiliateData: (item.affiliate_profitability_score || 0) > 0,\
+                affiliateProfitabilityLevel: item.affiliateProfitabilityLevel || 'Unknown',\
+                combinedScore: (item.monetization_score || 0) + (item.affiliate_profitability_score || 0) * 0.3\
+            \}));\
+    \}\
+\
+    // Original Table Data (unfiltered) - keep for reference\
+    const originalTableData = DataTransformer.generateTableData(trendingTopics, contentOpportunities);\
+    Outputs.TrendingTopicsTableData = originalTableData.topicsTableData;\
+    Outputs.ContentOpportunitiesTableData = originalTableData.opportunitiesTableData;\
+\
+    // ====================================================================\
+    // ENHANCED SELECTION MANAGEMENT OUTPUTS WITH AFFILIATE SUPPORT\
+    // ====================================================================\
+    \
+    Outputs.SelectedTopicIds = trendingTopics.filter(t => t.selected).map(t => t.id);\
+    Outputs.SelectedOpportunityIds = contentOpportunities.filter(o => o.selected).map(o => o.id);\
+    \
+    const selectedTopicsCount = trendingTopics.filter(t => t.selected).length;\
+    const selectedOpportunitiesCount = contentOpportunities.filter(o => o.selected).length;\
+    const totalSelections = selectedTopicsCount + selectedOpportunitiesCount;\
+    \
+    // Enhanced Selection Summary with Affiliate Data\
+    const selectedItems = [...trendingTopics.filter(t => t.selected), ...contentOpportunities.filter(o => o.selected)];\
+    const selectedMonetizationPotential = selectedItems.reduce((sum, item) => \{\
+        const maxRevenue = parseInt(item.estimated_revenue_range?.split(' - ')[1]?.replace(/[$,]/g, '') || '0') || 0;\
+        return sum + maxRevenue;\
+    \}, 0);\
+    \
+    const selectedAffiliateItems = selectedItems.filter(item => (item.affiliate_profitability_score || 0) > 0);\
+    const avgSelectedAffiliateScore = selectedAffiliateItems.length > 0 ? \
+        Math.round(selectedAffiliateItems.reduce((sum, item) => sum + (item.affiliate_profitability_score || 0), 0) / selectedAffiliateItems.length) : 0;\
+    \
+    Outputs.SelectionSummary = \{\
+        selectedTopics: selectedTopicsCount,\
+        totalTopics: trendingTopics.length,\
+        selectedOpportunities: selectedOpportunitiesCount,\
+        totalOpportunities: contentOpportunities.length,\
+        readyForPhase2: totalSelections > 0,\
+        totalSelections,\
+        selectionProgress: Math.round((totalSelections / Math.max(trendingTopics.length + contentOpportunities.length, 1)) * 100),\
+        hasHighPotentialSelections: trendingTopics.some(t => t.selected && t.viral_potential >= 80) || contentOpportunities.some(o => o.selected && o.engagement_potential === 'High'),\
+        // Enhanced monetization selection data with affiliate info\
+        selectedMonetizationPotential: selectedMonetizationPotential,\
+        avgSelectedMonetizationScore: selectedItems.length > 0 ? Math.round(selectedItems.reduce((sum, item) => sum + (item.monetization_score || 0), 0) / selectedItems.length) : 0,\
+        hasHighMonetizationSelections: selectedItems.some(item => (item.monetization_score || 0) >= 70),\
+        topSelectedMonetizationStream: selectedItems.length > 0 ? \
+            selectedItems.reduce((acc, item) => \{\
+                (item.monetization_streams || []).forEach(stream => \{\
+                    acc[stream.type] = (acc[stream.type] || 0) + 1;\
+                \});\
+                return acc;\
+            \}, \{\}) : \{\},\
+        // NEW: Affiliate selection data\
+        selectedAffiliateItems: selectedAffiliateItems.length,\
+        avgSelectedAffiliateScore: avgSelectedAffiliateScore,\
+        hasHighAffiliateSelections: selectedItems.some(item => (item.affiliate_profitability_score || 0) >= 70),\
+        affiliateRevenueBoost: selectedAffiliateItems.length > 0 ? `+$\{avgSelectedAffiliateScore\}% affiliate boost` : null\
+    \};\
+\
+    // ====================================================================\
+    // ENHANCED PHASE 2 READINESS WITH AFFILIATE ASSESSMENT\
+    // ====================================================================\
+    \
+    const generatePhase2Recommendations = () => \{\
+        const recommendations = [];\
+        \
+        if (totalSelections === 0) \{\
+            recommendations.push(\{ type: 'warning', message: 'Select at least 1 topic or opportunity to proceed to Phase 2', action: 'selectItems', priority: 'high' \});\
+        \} else if (totalSelections > 10) \{\
+            recommendations.push(\{ type: 'info', message: 'Consider reducing selections to 5-8 items for focused blog idea generation', action: 'optimizeSelection', priority: 'medium' \});\
+        \}\
+        \
+        if (!Outputs.SelectionSummary.hasHighPotentialSelections) \{\
+            recommendations.push(\{ type: 'suggestion', message: 'Consider adding at least one high-potential item for better blog ideas', action: 'addHighPotential', priority: 'medium' \});\
+        \}\
+        \
+        // Enhanced monetization recommendations\
+        if (!Outputs.SelectionSummary.hasHighMonetizationSelections) \{\
+            recommendations.push(\{ type: 'suggestion', message: 'Add high-monetization items for better revenue potential', action: 'addHighMonetization', priority: 'medium' \});\
+        \}\
+        \
+        // NEW: Affiliate-specific recommendations\
+        if (affiliateResearchData && !Outputs.SelectionSummary.hasHighAffiliateSelections) \{\
+            recommendations.push(\{ type: 'suggestion', message: 'Add high-affiliate-profit items to maximize affiliate revenue', action: 'addHighAffiliate', priority: 'medium' \});\
+        \}\
+        \
+        if (affiliateResearchData && affiliateProfitabilityScore >= 70) \{\
+            recommendations.push(\{ type: 'success', message: `Excellent affiliate potential detected ($\{affiliateProfitabilityScore\}% score)!`, action: 'leverageAffiliate', priority: 'high' \});\
+        \}\
+        \
+        if (selectedMonetizationPotential < 5000 && affiliateResearchData) \{\
+            recommendations.push(\{ type: 'info', message: 'Consider focusing on high-affiliate items to boost revenue potential', action: 'optimizeAffiliate', priority: 'low' \});\
+        \}\
+        \
+        if (selectedTopicsCount > 0 && selectedOpportunitiesCount === 0) \{\
+            recommendations.push(\{ type: 'suggestion', message: 'Add content opportunities for more diverse blog idea formats', action: 'addOpportunities', priority: 'low' \});\
+        \}\
+        \
+        if (selectedOpportunitiesCount > 0 && selectedTopicsCount === 0) \{\
+            recommendations.push(\{ type: 'suggestion', message: 'Add trending topics for more timely and viral blog ideas', action: 'addTopics', priority: 'low' \});\
+        \}\
+        \
+        return recommendations;\
+    \};\
+\
+    // Enhanced Phase 2 Readiness with Affiliate Integration\
+    Outputs.Phase2Readiness = \{\
+        isReady: Outputs.SelectionSummary.readyForPhase2,\
+        analysisId: currentAnalysisId,\
+        selectedItemsCount: totalSelections,\
+        meetsMinimum: totalSelections >= 1,\
+        hasHighQuality: Outputs.SelectionSummary.hasHighPotentialSelections,\
+        isOptimal: totalSelections >= 3 && totalSelections <= 8,\
+        recommendations: generatePhase2Recommendations(),\
+        // Enhanced monetization readiness with affiliate data\
+        hasMonetizationPotential: Outputs.SelectionSummary.hasHighMonetizationSelections,\
+        estimatedRevenuePotential: selectedMonetizationPotential,\
+        avgMonetizationScore: Outputs.SelectionSummary.avgSelectedMonetizationScore,\
+        // NEW: Affiliate readiness assessment\
+        hasAffiliateData: !!affiliateResearchData,\
+        affiliateProfitabilityScore: affiliateProfitabilityScore,\
+        hasAffiliateSelections: Outputs.SelectionSummary.hasHighAffiliateSelections,\
+        affiliateBoostPotential: Outputs.SelectionSummary.affiliateRevenueBoost,\
+        phase2Preview: \{\
+            trendAnalysisId: currentAnalysisId,\
+            researchContext: \{\
+                topic: analysisInfo.topic,\
+                targetAudience: analysisInfo.target_audience,\
+                focusArea: analysisInfo.focus_area,\
+                confidenceScore: Utils.safeGet(analysisInfo, 'metadata.confidence_score', 85)\
+            \},\
+            selectionSummary: Outputs.SelectionSummary,\
+            selectedTopicsCount,\
+            selectedOpportunitiesCount,\
+            confidenceLevel: Utils.safeGet(analysisInfo, 'metadata.confidence_score', 85) >= 80 ? 'High' : \
+                           Utils.safeGet(analysisInfo, 'metadata.confidence_score', 85) >= 60 ? 'Medium' : 'Low',\
+            // Enhanced monetization preview with affiliate integration\
+            monetizationPreview: \{\
+                totalRevenuePotential: selectedMonetizationPotential,\
+                avgMonetizationScore: Outputs.SelectionSummary.avgSelectedMonetizationScore,\
+                topMonetizationStreams: Object.keys(Outputs.SelectionSummary.topSelectedMonetizationStream || \{\}).slice(0, 3),\
+                revenueCategory: selectedMonetizationPotential >= 10000 ? 'High' : selectedMonetizationPotential >= 5000 ? 'Medium' : 'Low',\
+                // NEW: Affiliate preview data\
+                affiliateEnhanced: !!affiliateResearchData,\
+                affiliateProfitabilityScore: affiliateProfitabilityScore,\
+                affiliateOfferCount: affiliateResearchData ? (affiliateResearchData.offers || []).length : 0,\
+                selectedAffiliateItems: Outputs.SelectionSummary.selectedAffiliateItems,\
+                affiliateBoostFactor: avgSelectedAffiliateScore > 0 ? `$\{avgSelectedAffiliateScore\}%` : null\
+            \}\
+        \}\
+    \};\
+\
+    // ====================================================================\
+    // ENHANCED UI STATE AND ADDITIONAL OUTPUTS\
+    // ====================================================================\
+    \
+    Outputs.UIState = \{\
+        hasData: trendingTopics.length > 0 || contentOpportunities.length > 0,\
+        isEmpty: trendingTopics.length === 0 && contentOpportunities.length === 0,\
+        hasSelections: totalSelections > 0,\
+        isLoadingSelection: false,\
+        isLoadingData: false,\
+        hasError: false,\
+        errorMessage: '',\
+        showSuccessMessage: Outputs.selectionSuccess || Outputs.bulkSelectionSuccess || false,\
+        successMessage: Outputs.selectionSuccess ? 'Selection updated successfully' : Outputs.bulkSelectionSuccess ? 'Bulk selection completed' : '',\
+        lastDataUpdate: Date.now(),\
+        lastSelectionUpdate: Outputs.lastSelectionUpdate || Date.now(),\
+        // Enhanced monetization UI state with affiliate data\
+        hasMonetizationData: [...trendingTopics, ...contentOpportunities].some(item => item.monetization_score > 0),\
+        showMonetizationInsights: totalEstimatedRevenue > 0,\
+        // NEW: Affiliate UI state\
+        hasAffiliateData: !!affiliateResearchData,\
+        showAffiliateInsights: affiliateProfitabilityScore > 0,\
+        affiliateDataAvailable: !!affiliateResearchData,\
+        showAffiliateWarning: affiliateResearchData && affiliateProfitabilityScore < 30,\
+        showAffiliateSuccess: affiliateResearchData && affiliateProfitabilityScore >= 70\
+    \};\
+\
+    // Enhanced Export Data with Affiliate Information\
+    Outputs.ExportData = \{\
+        analysisId: currentAnalysisId,\
+        timestamp: new Date().toISOString(),\
+        summary: \{\
+            topic: analysisInfo.topic,\
+            focusArea: analysisInfo.focus_area,\
+            targetAudience: analysisInfo.target_audience,\
+            confidenceScore: Utils.safeGet(analysisInfo, 'metadata.confidence_score', 85),\
+            totalTopics: trendingTopics.length,\
+            totalOpportunities: contentOpportunities.length,\
+            selectedItems: totalSelections,\
+            // Enhanced monetization export data with affiliate info\
+            totalEstimatedRevenue: totalEstimatedRevenue,\
+            avgMonetizationScore: Outputs.MarketTrendSummary.avgMonetizationScore,\
+            selectedRevenuePotential: selectedMonetizationPotential,\
+            // NEW: Affiliate export data\
+            affiliateResearchCompleted: !!affiliateResearchData,\
+            affiliateProfitabilityScore: affiliateProfitabilityScore,\
+            affiliateOfferCount: affiliateResearchData ? (affiliateResearchData.offers || []).length : 0,\
+            selectedAffiliateItems: Outputs.SelectionSummary.selectedAffiliateItems\
+        \},\
+        selectedTopics: trendingTopics.filter(t => t.selected).map(t => (\{\
+            title: t.title,\
+            viralPotential: t.viral_potential,\
+            keywords: t.keywords,\
+            searchVolume: t.search_volume,\
+            competition: t.competition,\
+            // Enhanced monetization fields with affiliate data\
+            monetizationScore: t.monetization_score,\
+            revenueRange: t.estimated_revenue_range,\
+            monetizationPriority: t.monetization_priority,\
+            monetizationStreams: t.monetization_streams,\
+            // NEW: Affiliate fields\
+            affiliateProfitabilityScore: t.affiliate_profitability_score || 0,\
+            hasAffiliateData: (t.affiliate_profitability_score || 0) > 0,\
+            affiliateProfitabilityLevel: t.affiliateProfitabilityLevel || 'Unknown'\
+        \})),\
+        selectedOpportunities: contentOpportunities.filter(o => o.selected).map(o => (\{\
+            title: o.title,\
+            format: o.format,\
+            engagementPotential: o.engagement_potential,\
+            difficulty: o.difficulty,\
+            timeInvestment: Utils.safeGet(o, 'additional_data.time_investment', "2-3 weeks"),\
+            // Enhanced monetization fields with affiliate data\
+            monetizationScore: o.monetization_score,\
+            revenueRange: o.estimated_revenue_range,\
+            monetizationPriority: o.monetization_priority,\
+            monetizationStreams: o.monetization_streams,\
+            // NEW: Affiliate fields\
+            affiliateProfitabilityScore: o.affiliate_profitability_score || 0,\
+            hasAffiliateData: (o.affiliate_profitability_score || 0) > 0,\
+            affiliateProfitabilityLevel: o.affiliateProfitabilityLevel || 'Unknown'\
+        \})),\
+        // NEW: Affiliate research export\
+        affiliateResearch: affiliateResearchData ? \{\
+            profitabilityScore: affiliateProfitabilityScore,\
+            level: Utils.getProfitabilityLevel(affiliateProfitabilityScore),\
+            offers: affiliateResearchData.offers || [],\
+            recommendations: affiliateRecommendations,\
+            topNetworks: [...new Set((affiliateResearchData.offers || []).map(o => o.network))],\
+            avgCommission: affiliateResearchData.offers ? \
+                Math.round(affiliateResearchData.offers.reduce((sum, o) => sum + (o.commission_rate || 0), 0) / affiliateResearchData.offers.length) : 0\
+        \} : null\
+    \};\
+\
+    // Enhanced Analysis Metrics with Affiliate Integration\
+    Outputs.AnalysisMetrics = \{\
+        confidenceScore: Utils.safeGet(analysisInfo, 'metadata.confidence_score', 85),\
+        enhancedResearch: true,\
+        dataSource: "supabase",\
+        analysisId: currentAnalysisId,\
+        totalTrendingTopics: trendingTopics.length,\
+        totalOpportunities: contentOpportunities.length,\
+        selectedItems: totalSelections,\
+        averageViralScore: trendingTopics.length > 0 ? Math.round(trendingTopics.reduce((sum, t) => sum + t.viral_potential, 0) / trendingTopics.length) : 0,\
+        highPotentialCount: trendingTopics.filter(t => t.viral_potential >= 80).length,\
+        quickWinCount: contentOpportunities.filter(o => o.difficulty <= 40 && o.engagement_potential === 'High').length,\
+        // Enhanced monetization metrics with affiliate data\
+        totalEstimatedRevenue: totalEstimatedRevenue,\
+        avgMonetizationScore: Outputs.MarketTrendSummary.avgMonetizationScore,\
+        highMonetizationCount: [...trendingTopics, ...contentOpportunities].filter(item => (item.monetization_score || 0) >= 70).length,\
+        monetizationEnhanced: true,\
+        // NEW: Affiliate metrics\
+        affiliateResearchCompleted: !!affiliateResearchData,\
+        affiliateProfitabilityScore: affiliateProfitabilityScore,\
+        highAffiliateCount: [...trendingTopics, ...contentOpportunities].filter(item => (item.affiliate_profitability_score || 0) >= 70).length,\
+        affiliateEnhanced: !!affiliateResearchData,\
+        combinedMonetizationScore: Math.round((Outputs.MarketTrendSummary.avgMonetizationScore + affiliateProfitabilityScore * 0.3) / 1.3)\
+    \};\
+\
+    Outputs.ProcessingTime = Utils.safeGet(analysisInfo, 'metadata.processing_time', 0);\
+    Outputs.ConfidenceScore = Utils.safeGet(analysisInfo, 'metadata.confidence_score', 85);\
+    Outputs.DataSources = affiliateResearchData ? \
+        ["supabase", "enhanced_research", "monetization_analysis", "affiliate_research"] :\
+        ["supabase", "enhanced_research", "monetization_analysis"];\
+\
+    // ========================================================================\
+    // VERIFICATION LOGGING WITH AFFILIATE DATA\
+    // ========================================================================\
+\
+    console.log("\uc0\u55357 \u56589  FINAL VERIFICATION:");\
+    console.log("GoogleTrendsOverview momentum:", Outputs.GoogleTrendsOverview?.momentum);\
+    console.log("PyTrends mainTopicAnalysis momentum:", Outputs.PyTrendsInsights?.mainTopicAnalysis?.momentum);\
+    console.log("MarketTrendSummary trendMomentum:", Outputs.MarketTrendSummary?.trendMomentum);\
+\
+    // Add specific KPI momentum output\
+    Outputs.KPI_momentum = momentum;\
+    console.log("KPI_momentum output:", Outputs.KPI_momentum);\
+\
+    // Enhanced monetization verification logging with affiliate data\
+    console.log("\uc0\u55357 \u56496  MONETIZATION VERIFICATION:");\
+    console.log("Total Estimated Revenue:", totalEstimatedRevenue);\
+    console.log("Avg Monetization Score:", Outputs.MarketTrendSummary.avgMonetizationScore);\
+    console.log("High Monetization Items:", Outputs.MarketTrendSummary.highMonetizationCount);\
+    console.log("Selected Revenue Potential:", selectedMonetizationPotential);\
+\
+    // NEW: Affiliate verification logging\
+    console.log("\uc0\u55356 \u57263  AFFILIATE RESEARCH VERIFICATION:");\
+    console.log("Affiliate Research Available:", !!affiliateResearchData);\
+    console.log("Affiliate Profitability Score:", affiliateProfitabilityScore);\
+    console.log("Affiliate Offer Count:", affiliateResearchData ? (affiliateResearchData.offers || []).length : 0);\
+    console.log("High Affiliate Items:", [...trendingTopics, ...contentOpportunities].filter(item => (item.affiliate_profitability_score || 0) >= 70).length);\
+    console.log("Selected Affiliate Items:", Outputs.SelectionSummary.selectedAffiliateItems);\
+\
+    // ========================================================================\
+    // DEBUG INFORMATION WITH AFFILIATE DATA\
+    // ========================================================================\
+\
+    Outputs.PyTrendsDebugInfo = \{\
+        dataFound: pytrendsAvailable,\
+        dataSource: pytrendsAvailable ? "metadata" : "none",\
+        metadataStructure: analysisData?.analysis_info?.metadata ? \
+            Object.keys(analysisData.analysis_info.metadata) : [],\
+        pytrendsKeys: pytrendsData ? Object.keys(pytrendsData) : [],\
+        geographicHotspotsCount: geographicHotspots.length,\
+        actionableInsightsCount: actionableInsights.length,\
+        mainAnalysisSuccess: pytrendsData?.main_topic_analysis?.analysis_success || false,\
+        geographicAnalysisSuccess: pytrendsData?.geographic_insights?.analysis_success || false,\
+        currentInterest: currentInterest,\
+        momentum: momentum,\
+        trendDirection: trendDirection,\
+        topMarket: geographicHotspots.length > 0 ? geographicHotspots[0].country : "Unknown",\
+        timestamp: new Date().toISOString()\
+    \};\
+\
+    // Enhanced Monetization Debug Info with Affiliate Data\
+    Outputs.MonetizationDebugInfo = \{\
+        monetizationEnhanced: true,\
+        totalItemsAnalyzed: [...trendingTopics, ...contentOpportunities].length,\
+        avgTopicMonetization: trendingTopics.length > 0 ? Math.round(trendingTopics.reduce((sum, t) => sum + (t.monetization_score || 0), 0) / trendingTopics.length) : 0,\
+        avgOppMonetization: contentOpportunities.length > 0 ? Math.round(contentOpportunities.reduce((sum, o) => sum + (o.monetization_score || 0), 0) / contentOpportunities.length) : 0,\
+        revenueRangeDistribution: \{\
+            high: [...trendingTopics, ...contentOpportunities].filter(item => \
+                parseInt(item.estimated_revenue_range?.split(' - ')[1]?.replace(/[$,]/g, '') || '0') >= 5000).length,\
+            medium: [...trendingTopics, ...contentOpportunities].filter(item => \{\
+                const maxRevenue = parseInt(item.estimated_revenue_range?.split(' - ')[1]?.replace(/[$,]/g, '') || '0');\
+                return maxRevenue >= 1000 && maxRevenue < 5000;\
+            \}).length,\
+            low: [...trendingTopics, ...contentOpportunities].filter(item => \
+                parseInt(item.estimated_revenue_range?.split(' - ')[1]?.replace(/[$,]/g, '') || '0') < 1000).length\
+        \},\
+        streamDistribution: \{\
+            affiliate: [...trendingTopics, ...contentOpportunities]\
+                .filter(item => (item.monetization_streams || []).some(s => s.type === 'affiliate')).length,\
+            digital_product: [...trendingTopics, ...contentOpportunities]\
+                .filter(item => (item.monetization_streams || []).some(s => s.type === 'digital_product')).length,\
+            services: [...trendingTopics, ...contentOpportunities]\
+                .filter(item => (item.monetization_streams || []).some(s => s.type === 'services')).length,\
+            lead_generation: [...trendingTopics, ...contentOpportunities]\
+                .filter(item => (item.monetization_streams || []).some(s => s.type === 'lead_generation')).length\
+        \},\
+        // NEW: Affiliate-specific debug info\
+        affiliateIntegration: \{\
+            affiliateResearchAvailable: !!affiliateResearchData,\
+            affiliateProfitabilityScore: affiliateProfitabilityScore,\
+            affiliateOfferCount: affiliateResearchData ? (affiliateResearchData.offers || []).length : 0,\
+            itemsWithAffiliateData: [...trendingTopics, ...contentOpportunities].filter(item => (item.affiliate_profitability_score || 0) > 0).length,\
+            avgAffiliateScore: [...trendingTopics, ...contentOpportunities].length > 0 ? \
+                Math.round([...trendingTopics, ...contentOpportunities].reduce((sum, item) => sum + (item.affiliate_profitability_score || 0), 0) / [...trendingTopics, ...contentOpportunities].length) : 0,\
+            highAffiliateItems: [...trendingTopics, ...contentOpportunities].filter(item => (item.affiliate_profitability_score || 0) >= 70).length\
+        \},\
+        timestamp: new Date().toISOString()\
+    \};\
+\
+    // NEW: Dedicated Affiliate Debug Info\
+    Outputs.AffiliateDebugInfo = \{\
+        affiliateResearchEnabled: enableAffiliateResearch,\
+        affiliateResearchCompleted: !!affiliateResearchData,\
+        affiliateValidationResults: Outputs.AffiliateValidation || null,\
+        affiliateCancellationResults: Outputs.AffiliateCancellation || null,\
+        profitabilityAssessment: \{\
+            score: affiliateProfitabilityScore,\
+            level: Utils.getProfitabilityLevel(affiliateProfitabilityScore),\
+            threshold: minAffiliateScore,\
+            passedThreshold: affiliateProfitabilityScore >= minAffiliateScore\
+        \},\
+        offerAnalysis: affiliateResearchData ? \{\
+            totalOffers: (affiliateResearchData.offers || []).length,\
+            avgCommission: affiliateResearchData.offers ? \
+                Math.round(affiliateResearchData.offers.reduce((sum, o) => sum + (o.commission_rate || 0), 0) / affiliateResearchData.offers.length) : 0,\
+            networks: [...new Set((affiliateResearchData.offers || []).map(o => o.network))],\
+            highValueOffers: affiliateResearchData.offers ? affiliateResearchData.offers.filter(o => (o.commission_rate || 0) >= 30).length : 0\
+        \} : null,\
+        recommendationsGenerated: affiliateRecommendations.length,\
+        integrationStatus: \{\
+            dataPassedToItems: [...trendingTopics, ...contentOpportunities].filter(item => (item.affiliate_profitability_score || 0) > 0).length > 0,\
+            enhancedMonetizationCalculation: true,\
+            uiStateUpdated: !!Outputs.UIState.hasAffiliateData,\
+            exportDataIncluded: !!Outputs.ExportData.affiliateResearch\
+        \},\
+        timestamp: new Date().toISOString()\
+    \};\
+\
+    console.log("\uc0\u55357 \u56523  Debug Info:", Outputs.PyTrendsDebugInfo);\
+    console.log("\uc0\u55357 \u56496  Monetization Debug Info:", Outputs.MonetizationDebugInfo);\
+    console.log("\uc0\u55356 \u57263  Affiliate Debug Info:", Outputs.AffiliateDebugInfo);\
+\
+    // ========================================================================\
+    // SUCCESS SUMMARY WITH AFFILIATE RESEARCH INTEGRATION\
+    // ========================================================================\
+\
+    const successSummary = `\
+\uc0\u9989  ENHANCED TREND ANALYSIS WITH AFFILIATE RESEARCH INTEGRATION COMPLETED!\
+\
+CORE METRICS:\
+- Topics: $\{trendingTopics.length\}\
+- Opportunities: $\{contentOpportunities.length\}\
+- Momentum: $\{momentum\}%\
+- Current Interest: $\{currentInterest\}\
+\
+\uc0\u55356 \u57263  AFFILIATE RESEARCH RESULTS:\
+- Affiliate Research Enabled: $\{enableAffiliateResearch\}\
+- Profitability Score: $\{affiliateProfitabilityScore\}%\
+- Profitability Level: $\{Utils.getProfitabilityLevel(affiliateProfitabilityScore)\}\
+- Offer Count: $\{affiliateResearchData ? (affiliateResearchData.offers || []).length : 0\}\
+- Threshold Check: $\{affiliateProfitabilityScore >= minAffiliateScore ? 'PASSED' : 'FAILED'\} ($\{minAffiliateScore\}% required)\
+\
+\uc0\u55357 \u56496  ENHANCED MONETIZATION METRICS:\
+- Total Revenue Potential: $\{totalEstimatedRevenue.toLocaleString()\}\
+- Avg Monetization Score: $\{Outputs.MarketTrendSummary.avgMonetizationScore\}%\
+- High Monetization Items: $\{Outputs.MarketTrendSummary.highMonetizationCount\}\
+- Selected Revenue Potential: $\{selectedMonetizationPotential.toLocaleString()\}\
+- Affiliate-Enhanced Items: $\{[...trendingTopics, ...contentOpportunities].filter(item => (item.affiliate_profitability_score || 0) > 0).length\}\
+\
+\uc0\u55356 \u57263  AFFILIATE INTEGRATION FEATURES:\
+- Phase 0 affiliate validation $\{affiliateResearchData ? 'COMPLETED' : 'SKIPPED'\}\
+- Affiliate profitability scoring applied to all items\
+- Enhanced revenue calculations with affiliate boost\
+- Affiliate-aware selection recommendations\
+- Integrated affiliate data in exports and UI\
+\
+\uc0\u55356 \u57263  TOP MONETIZATION STREAMS:\
+- Affiliate: $\{Outputs.MonetizationDebugInfo.streamDistribution.affiliate\} items\
+- Digital Products: $\{Outputs.MonetizationDebugInfo.streamDistribution.digital_product\} items\
+- Services: $\{Outputs.MonetizationDebugInfo.streamDistribution.services\} items\
+- Lead Generation: $\{Outputs.MonetizationDebugInfo.streamDistribution.lead_generation\} items\
+\
+ENHANCED FEATURES:\
+\uc0\u9989  Phase 0: Affiliate offer research integration\
+\uc0\u9989  Affiliate profitability validation and scoring\
+\uc0\u9989  Enhanced monetization calculations with affiliate data\
+\uc0\u9989  Affiliate-aware selection strategies\
+\uc0\u9989  Integrated affiliate filters and quick actions\
+\uc0\u9989  Phase 2 readiness with affiliate assessment\
+\uc0\u9989  Comprehensive affiliate debugging and verification\
+\uc0\u9989  Export data includes affiliate research results\
+\
+$\{affiliateResearchData && affiliateProfitabilityScore >= 70 ? \
+'\uc0\u55356 \u57225  EXCELLENT AFFILIATE OPPORTUNITY DETECTED! This topic has strong monetization potential.' :\
+affiliateResearchData && affiliateProfitabilityScore >= 50 ?\
+'\uc0\u9989  GOOD AFFILIATE POTENTIAL FOUND! Consider focusing on high-commission subtopics.' :\
+affiliateResearchData && affiliateProfitabilityScore < 30 ?\
+'\uc0\u9888 \u65039  LIMITED AFFILIATE POTENTIAL. Consider topic refinement or alternative monetization.' :\
+'\uc0\u55357 \u56522  AFFILIATE RESEARCH NOT AVAILABLE. Standard monetization analysis applied.'\}\
+\
+Your trend analysis now includes comprehensive affiliate research integration for maximum revenue potential!\
+`;\
+    console.log(successSummary);\
+\
+// ========================================================================\
+// END OF SUCCESSFUL EXECUTION - CLOSE THE MAIN TRY BLOCK\
+// ========================================================================\
+\
+\} catch (error) \{\
+    // Enhanced Error Handling with Affiliate Context\
+    console.error('\uc0\u10060  Enhanced Noodl function with affiliate integration failed:', error);\
+    \
+    Outputs.loading = false;\
+    Outputs.error = error.message || 'Unknown error occurred';\
+    \
+    // Clear all outputs on error\
+    const clearOutputs = [\
+        'MarketTrendSummary', 'TrendingTopicsList', 'ContentOpportunitiesList',\
+        'TrendingTopicsTableData', 'ContentOpportunitiesTableData', 'currentAnalysisId',\
+        'PyTrendsInsights', 'GoogleTrendsOverview', 'ActionableInsightsPanel',\
+        // Enhanced monetization outputs\
+        'MonetizationDashboard', 'MonetizationInsights', 'TopMonetizationOpportunities',\
+        // NEW: Affiliate outputs\
+        'AffiliateResearchData', 'AffiliateOffers', 'AffiliateProfitabilityScore', 'AffiliateRecommendations',\
+        'AffiliateValidation', 'AffiliateCancellation'\
+    ];\
+    \
+    clearOutputs.forEach(output => Outputs[output] = null);\
+    \
+    // Set error-specific outputs\
+    Outputs.UIState = \{\
+        hasError: true,\
+        errorMessage: error.message || 'Unknown error occurred',\
+        hasData: false,\
+        isEmpty: true,\
+        hasSelections: false,\
+        isLoadingSelection: false,\
+        isLoadingData: false,\
+        showSuccessMessage: false,\
+        successMessage: '',\
+        lastDataUpdate: Date.now(),\
+        // Enhanced monetization error state\
+        hasMonetizationData: false,\
+        showMonetizationInsights: false,\
+        // NEW: Affiliate error state\
+        hasAffiliateData: false,\
+        showAffiliateInsights: false,\
+        affiliateDataAvailable: false,\
+        showAffiliateWarning: false,\
+        showAffiliateSuccess: false\
+    \};\
+    \
+    // Enhanced error context with affiliate information\
+    Outputs.ErrorContext = \{\
+        errorType: error.name || 'UnknownError',\
+        timestamp: new Date().toISOString(),\
+        mode: loadMode,\
+        step: loadMode === 'new' ? 'trend_research_api' : 'data_loading',\
+        affiliateResearchEnabled: enableAffiliateResearch,\
+        troubleshooting: \{\
+            commonCauses: [\
+                "API service unavailable",\
+                "Invalid API keys", \
+                "Database connection issues",\
+                "Invalid analysis ID",\
+                "Network connectivity problems",\
+                "Affiliate research service unavailable",\
+                "Affiliate API timeout or failure"\
+            ],\
+            suggestedActions: [\
+                "Check API key validity",\
+                "Verify network connection",\
+                "Try again in a moment",\
+                "Contact support if issue persists",\
+                "Check affiliate research service status",\
+                "Try disabling affiliate research if issues persist"\
+            ]\
+        \}\
+    \};\
+\
+    // Set fallback values\
+    Outputs.KPI_momentum = 0;\
+    \
+    // Fallback PyTrends outputs\
+    Outputs.PyTrendsInsights = \{\
+        available: false,\
+        mainTopicAnalysis: \{\
+            currentInterest: 0,\
+            trendDirection: "unknown",\
+            momentum: 0,\
+            peakInterest: 0,\
+            recommendation: "Error occurred during analysis"\
+        \},\
+        geographicHotspots: [],\
+        seasonalPatterns: \{ hasPattern: false, peakMonths: [], nextPeak: null \},\
+        relatedQueries: \{ topQueries: [], risingQueries: [] \},\
+        actionableInsights: []\
+    \};\
+    \
+    Outputs.GoogleTrendsOverview = \{\
+        available: false,\
+        currentScore: 0,\
+        trendDirection: "unknown",\
+        momentum: 0,\
+        topMarket: "Unknown",\
+        nextPeakTiming: null,\
+        hasData: false\
+    \};\
+    \
+    Outputs.ActionableInsightsPanel = \{\
+        urgentActions: [],\
+        timingSuggestions: [],\
+        geographicOpportunities: [],\
+        hasUrgentActions: false,\
+        available: false\
+    \};\
+\
+    // Fallback monetization outputs\
+    Outputs.MonetizationDashboard = \{\
+        overview: \{\
+            totalEstimatedRevenue: 0,\
+            avgMonetizationScore: 0,\
+            highPotentialItems: 0,\
+            mediumPotentialItems: 0,\
+            lowPotentialItems: 0,\
+            // NEW: Affiliate fallback\
+            affiliateEnhanced: false,\
+            affiliateProfitabilityScore: 0,\
+            itemsWithAffiliateData: 0\
+        \},\
+        revenueBreakdown: \{ topics: 0, opportunities: 0 \},\
+        streamAnalysis: \{ affiliate: 0, digital_product: 0, services: 0, lead_generation: 0 \},\
+        topMonetizationItems: []\
+    \};\
+\
+    Outputs.MonetizationInsights = \{\
+        recommendations: [],\
+        quickWins: [],\
+        revenuePotential: \{ immediate: 0, sixMonth: 0, annual: 0 \},\
+        // NEW: Affiliate fallback\
+        affiliateInsights: \{ available: false \}\
+    \};\
+\
+    // NEW: Fallback affiliate outputs\
+    Outputs.AffiliateResearchData = \{\
+        available: false,\
+        profitabilityScore: 0,\
+        profitabilityLevel: 'Unknown',\
+        insights: \{\},\
+        recommendations: [],\
+        offerCount: 0,\
+        topOffers: [],\
+        subtopicsCovered: 0,\
+        shouldProceed: true\
+    \};\
+\}\
+\
+// ============================================================================\
+// FINALIZE OUTPUTS\
+// ============================================================================\
+\
+Outputs.Finished();\
+\
+// ============================================================================\
+// IMPLEMENTATION GUIDE FOR AFFILIATE RESEARCH INTEGRATION\
+// ============================================================================\
+\
+const AffiliateIntegrationGuide = `\
+\uc0\u55357 \u56960  AFFILIATE RESEARCH INTEGRATION IMPLEMENTATION GUIDE\
+\
+WHAT'S NEW:\
+\uc0\u9989  Phase 0: Affiliate offer research before trend analysis\
+\uc0\u9989  Affiliate profitability validation and threshold checking\
+\uc0\u9989  Enhanced monetization scoring with affiliate data\
+\uc0\u9989  Affiliate-aware selection strategies and quick actions\
+\uc0\u9989  Integrated affiliate filters and UI components\
+\uc0\u9989  Comprehensive affiliate debugging and verification\
+\uc0\u9989  Enhanced Phase 2 readiness with affiliate assessment\
+\
+KEY NEW CONFIGURATION OPTIONS:\
+- enableAffiliateResearch: Enable/disable affiliate research (default: true)\
+- minAffiliateScore: Minimum profitability threshold (default: 30)\
+- minCommissionThreshold: Minimum commission rate filter (default: 25)\
+- subtopics: Optional manual subtopics for research\
+\
+KEY NEW OUTPUTS:\
+1. **AffiliateResearchData**: Complete affiliate research results\
+2. **AffiliateValidation**: Pre-validation results and warnings\
+3. **AffiliateCancellation**: Cancellation data if topic rejected\
+4. **Enhanced MarketTrendSummary**: Now includes affiliate metrics\
+5. **Enhanced Selection Options**: Affiliate-aware bulk selections\
+6. **Enhanced Monetization**: Affiliate-boosted revenue calculations\
+\
+FRONTEND INTEGRATION STEPS:\
+1. Add affiliate research configuration inputs\
+2. Handle affiliate validation warnings and cancellations\
+3. Update overview cards with affiliate metrics\
+4. Add affiliate tab to navigation\
+5. Create affiliate insights dashboard\
+6. Update selection quick actions with affiliate options\
+7. Enhance table columns with affiliate data\
+8. Update filters to include affiliate profitability\
+\
+NEW SELECTION STRATEGIES:\
+- 'High Affiliate Profit': Select items with 70+ affiliate score\
+- 'Revenue Focused': Weighted by both monetization + affiliate scores\
+- 'Smart Select': Now considers affiliate profitability\
+- Enhanced threshold-based selections\
+\
+AFFILIATE RESEARCH WORKFLOW:\
+1. User starts trend analysis\
+2. Phase 0: Affiliate research runs automatically (if enabled)\
+3. Topic validated against profitability threshold\
+4. If below threshold: Show cancellation with suggestions\
+5. If passed: Enhance all items with affiliate profitability data\
+6. User sees affiliate-enhanced selection options\
+7. Phase 2: Blog generation includes affiliate context\
+\
+CANCELLATION HANDLING:\
+When affiliate research determines low profitability:\
+- Show cancellation reason and score\
+- Provide subtopic suggestions\
+- Allow user to lower threshold or try different topics\
+- Option to proceed anyway (user choice)\
+\
+MONETIZATION ENHANCEMENTS:\
+- Affiliate profitability score influences monetization calculations\
+- Revenue estimates boosted by affiliate commission potential\
+- Selection recommendations weighted by affiliate opportunity\
+- Export data includes comprehensive affiliate analysis\
+\
+ERROR HANDLING:\
+- Graceful fallback if affiliate research fails\
+- Standard monetization analysis continues without affiliate data\
+- Clear error context and troubleshooting steps\
+- Option to retry with affiliate research disabled\
+\
+DEBUGGING FEATURES:\
+- AffiliateDebugInfo: Complete integration status\
+- Validation results tracking\
+- Profitability assessment details\
+- Integration verification metrics\
+\
+This enhancement bridges the profitability validation gap, ensuring users\
+focus on topics with real revenue potential from the very beginning!\
+`;\
+\
+}
