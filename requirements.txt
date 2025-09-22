@@ -1,37 +1,37 @@
-Flask>=2.0,<3.0
-Werkzeug>=2.0,<3.0
-gunicorn  # Updated to latest stable version
-llama-index  # Assuming 0.12.x is the latest stable. Adjust range as needed based on actual latest.
-llama-index-vector-stores-supabase # Match core LlamaIndex version range
-llama-index-embeddings-openai  # Match core LlamaIndex version range
-llama-index-llms-openai # Match core LlamaIndex version range
+Flask
+Werkzeug
+gunicorn
+llama-index
+llama-index-vector-stores-supabase
+llama-index-embeddings-openai
+llama-index-llms-openai
 llama-index-llms-deepseek
 python-dotenv
 Pillow
 supabase
-openai>=1.0.0
+openai
 llama-parse
-chromadb>=0.6.3
+chromadb
 llama-index-vector-stores-chroma
-llama_index.vector_stores.postgres
+llama-index-vector-stores-postgres
+
 vecs
 Flask-CORS
 torch
 flask_caching
 llama-index-llms-google-genai
-llama_index.llms.gemini
+llama-index-llms-gemini
 llama-index-llms-anthropic
 psutil
 matplotlib
 transformers
 tiktoken
-llama-index-agent-openai
 llama-index-tools-requests
-scikit-learn 
-joblib 
+scikit-learn
+joblib
 numpy
 mcp
 fastmcp
 linkup-sdk
 arxiv
-
+llama-index-agent-openai
