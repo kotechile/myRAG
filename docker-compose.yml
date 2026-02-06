@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  rag-system:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-system
+    ports:
+      - "${PORT:-8080}:8080"
+    # Coolify/Production Configuration
+    # In Coolify, environment variables should be set in the UI
+    # We keep "build" context for local testing or if Coolify builds from repo
+    environment:
+      - PORT=8080
+      - FLASK_ENV=production
+      # All other env vars should be injected by Coolify from .env
+
+    volumes:
+      - ./uploads:/app/uploads
+    restart: always
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - rag-network
+
+networks:
+  rag-network:
+    driver: bridge

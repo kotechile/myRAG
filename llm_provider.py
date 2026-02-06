@@ -47,16 +47,13 @@ class DeepSeekAdapter(LLMAdapter):
         self._tokenizer = None
         
         # Import DeepSeek
+        # Import DeepSeek
         try:
             from llama_index.llms.deepseek import DeepSeek
             self.DeepSeek = DeepSeek
         except ImportError:
-            try:
-                from llama_index.llms.deepseek import DeepSeek
-                self.DeepSeek = DeepSeek
-            except ImportError:
-                logger.error("DeepSeek module not found. Please install llama-index with DeepSeek support.")
-                self.DeepSeek = None
+            logger.error("DeepSeek module not found. Please install llama-index-llms-deepseek.")
+            self.DeepSeek = None
     
     def get_llm_instance(self):
         if self.DeepSeek is None:
@@ -116,17 +113,13 @@ class GeminiAdapter(LLMAdapter):
         self._tokenizer = None
         logger.info(f"GEMINI ADAPTER SELECTED")
         # Import Gemini
+        # Import Gemini
         try:
             from llama_index.llms.gemini import Gemini
             self.Gemini = Gemini
         except ImportError:
-            try:
-                # Try alternative import path
-                from llama_index.llms.gemini import Gemini
-                self.Gemini = Gemini
-            except ImportError:
-                logger.error("Gemini module not found. Please install with: pip install llama-index-llms-gemini")
-                self.Gemini = None
+            logger.error("Gemini module not found. Please install with: pip install llama-index-llms-gemini")
+            self.Gemini = None
     
     def get_llm_instance(self):
         if self.Gemini is None:
@@ -172,17 +165,13 @@ class OpenAIAdapter(LLMAdapter):
         self._tokenizer = None
         
         # Import OpenAI
+        # Import OpenAI
         try:
             from llama_index.llms.openai import OpenAI
             self.OpenAI = OpenAI
         except ImportError:
-            try:
-                # Try alternative import path
-                from llama_index.llms.openai import OpenAI
-                self.OpenAI = OpenAI
-            except ImportError:
-                logger.error("OpenAI module not found. Please ensure llama-index is installed correctly.")
-                self.OpenAI = None
+            logger.error("OpenAI module not found. Please ensure llama-index-llms-openai is installed.")
+            self.OpenAI = None
         
     def get_llm_instance(self):
         if self.OpenAI is None:
@@ -236,17 +225,13 @@ class AnthropicAdapter(LLMAdapter):
         self._tokenizer = None
         
         # Import Anthropic
+        # Import Anthropic
         try:
             from llama_index.llms.anthropic import Anthropic
             self.Anthropic = Anthropic
         except ImportError:
-            try:
-                # Try alternative import path
-                from llama_index.llms.anthropic import Anthropic
-                self.Anthropic = Anthropic
-            except ImportError:
-                logger.error("Anthropic module not found. Please install with: pip install llama-index-llms-anthropic")
-                self.Anthropic = None
+            logger.error("Anthropic module not found. Please install with: pip install llama-index-llms-anthropic")
+            self.Anthropic = None
     
     def get_llm_instance(self):
         if self.Anthropic is None:
@@ -307,19 +292,21 @@ class LLMProviderFactory:
         provider = provider.lower()
         
         if provider not in cls._adapters:
-            raise ValueError(f"Unsupported LLM provider: {provider}. "
-                           f"Supported providers: {', '.join(cls._adapters.keys())}")
+            # Try to map common names
+            if "google" in provider:
+                provider = "gemini"
+            elif "anthropic" in provider:
+                provider = "claude"
+            else:
+                raise ValueError(f"Unsupported LLM provider: {provider}. "
+                               f"Supported providers: {', '.join(cls._adapters.keys())}")
         
-        # Get API key from environment or kwargs
+        # Get API key from kwargs (populated from DB config)
         api_key = kwargs.pop("api_key", None)
         if api_key is None:
-            # Try to get from environment
-            env_var = f"{provider.upper()}_API_KEY"
-            api_key = os.getenv(env_var)
-            
-            if api_key is None:
-                raise ValueError(f"API key not provided for {provider}. "
-                               f"Set {env_var} environment variable or pass api_key in kwargs.")
+            # Strict mode: Do not fallback to os.getenv unless explicitly allowed or if we want to support legacy during transition.
+            # User request: "do not get API keys from application-settings"
+            raise ValueError(f"API key not provided for {provider}. Keys must be retrieved from the database configuration.")
         
         # Create and return adapter
         adapter_cls = cls._adapters[provider]
