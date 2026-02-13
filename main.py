@@ -35,6 +35,7 @@ from optimized_chunking import OptimizedDocumentChunker
 from optimized_embedding import EmbeddingPipeline, BatchDocumentProcessor
 from llm_provider import LLMProviderFactory
 import uuid
+import db_config  # Added for API key retrieval
 from threading import Thread
 
 # Configure logging
@@ -45,7 +46,14 @@ logger = logging.getLogger(__name__)
 load_dotenv(find_dotenv())
 
 # API keys and configurations
-LLAMA_PARSE_API_KEY = os.getenv("LLAMA_CLOUD_API_KEY")
+# Try to get Llama Cloud key from DB first, then env
+LLAMA_PARSE_API_KEY = db_config.get_api_key("llama_cloud") or os.getenv("LLAMA_CLOUD_API_KEY")
+
+if not LLAMA_PARSE_API_KEY:
+    logger.warning("⚠️ LLAMA_CLOUD_API_KEY not found in Supabase or environment variables. LlamaParse may fail.")
+else:
+    logger.info("✅ LLAMA_CLOUD_API_KEY loaded successfully")
+
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SUPABASE_DATABASE_PASSWORD = os.getenv("SUPABASE_DATABASE_PASSWORD")
@@ -59,7 +67,8 @@ DEFAULT_LLM_PROVIDER = "deepseek"
 # Global storage
 active_jobs = {}
 _engines = {}
-background_executor = ThreadPoolExecutor(max_workers=3)
+# Use more conservative thread pool to prevent memory issues
+background_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="rag_background")
 
 try:
     from knowledge_gap_http_supabase import integrate_knowledge_gap_filler_http
@@ -330,13 +339,18 @@ class SimpleRAGEngine:
         self.document_metadata = self._load_document_metadata()
 
 
-    def query_hybrid_enhanced(self, query: str, top_k: int = 10, llm_provider: str = DEFAULT_LLM_PROVIDER) -> Dict[str, Any]:
+    def query_hybrid_enhanced(self, query: str, top_k: int = 10, llm_provider: str = DEFAULT_LLM_PROVIDER, balance_emphasis: str = None) -> Dict[str, Any]:
         """
         Enhanced hybrid query using similarity search with importance weighting.
-        Favors comprehensive sources (books/long documents) over short articles.
+        Supports configurable balance between comprehensive sources and recent content.
         """
         start_time = time.time()
-        logger.info(f"🔍 Hybrid enhanced query: {query}")
+        
+        # Auto-detect balance emphasis if not provided
+        if balance_emphasis is None:
+            balance_emphasis = self._detect_query_type(query)
+        
+        logger.info(f"🔍 Hybrid enhanced query: {query} (balance: {balance_emphasis})")
         
         try:
             # Get LLM
@@ -385,9 +399,9 @@ class SimpleRAGEngine:
             for node in nodes:
                 doc_id = node.metadata.get('docid', '')
                 if doc_id:
-                    # Get document importance weight
+                    # Get document importance weight with balance emphasis
                     doc_metadata = self.document_metadata.get(str(doc_id), {})
-                    weight = doc_metadata.get('importance_weight', 1.0)
+                    weight = self._calculate_importance_weight(doc_metadata, balance_emphasis)
                     
                     # Apply weight to similarity score
                     boosted_score = node.score * weight
@@ -463,19 +477,65 @@ class SimpleRAGEngine:
             source_attribution = []
             
             for doc_id, usage_info in document_usage.items():
-                # Get document title from metadata
-                doc_title = self.document_metadata.get(str(doc_id), {}).get('title', f'Document {doc_id}')
+                # Get document title and author from metadata
+                doc_metadata = self.document_metadata.get(str(doc_id), {})
+                
+                # If metadata not found or has default values, try direct lookup
+                if not doc_metadata or doc_metadata.get('title') == f'Document {doc_id}':
+                    logger.warning(f"HYBRID_ENHANCED - Metadata not found for document {doc_id}, attempting direct lookup...")
+                    logger.warning(f"HYBRID_ENHANCED - Current collection_name: {self.collection_name}")
+                    logger.warning(f"HYBRID_ENHANCED - Available metadata keys: {list(self.document_metadata.keys())}")
+                    try:
+                        # Use HTTPSupabaseClient for direct lookup to avoid compatibility issues
+                        from knowledge_gap_http_supabase import HTTPSupabaseClient
+                        http_supabase = HTTPSupabaseClient()
+                        direct_response = http_supabase.table("lindex_documents").select(
+                            "id, title, author, url, publish_date, in_vector_store, collectionId"
+                        ).eq("id", doc_id).execute()
+                        
+                        if direct_response.data:
+                            direct_doc = direct_response.data[0]
+                            doc_title = direct_doc.get('title', f'Document {doc_id}')
+                            doc_author = direct_doc.get('author', 'Unknown Author')
+                            doc_url = direct_doc.get('url', '')
+                            doc_publish_date = direct_doc.get('publish_date', '')
+                            collection_id = direct_doc.get('collectionId')
+                            logger.info(f"HYBRID_ENHANCED - Direct lookup SUCCESS for doc {doc_id}: title='{doc_title}', author='{doc_author}', url='{doc_url}', publish_date='{doc_publish_date}', collectionId={collection_id}")
+                        else:
+                            doc_title = f'Document {doc_id}'
+                            doc_author = 'Unknown Author'
+                            doc_url = ''
+                            doc_publish_date = ''
+                            logger.warning(f"HYBRID_ENHANCED - Document {doc_id} not found in database")
+                    except Exception as e:
+                        logger.error(f"HYBRID_ENHANCED - Error in direct lookup for document {doc_id}: {e}")
+                        doc_title = f'Document {doc_id}'
+                        doc_author = 'Unknown Author'
+                        doc_url = ''
+                        doc_publish_date = ''
+                else:
+                    doc_title = doc_metadata.get('title', f'Document {doc_id}')
+                    doc_author = doc_metadata.get('author', 'Unknown Author')
+                    doc_url = doc_metadata.get('url', '')
+                    doc_publish_date = doc_metadata.get('publish_date', '')
+                    logger.info(f"HYBRID_ENHANCED - Using cached metadata for doc {doc_id}: title='{doc_title}', author='{doc_author}', url='{doc_url}', publish_date='{doc_publish_date}'")
+                
+                # Debug: Log what we're getting for each document
+                logger.info(f"HYBRID_ENHANCED - QUERY DEBUG - Document {doc_id}: metadata={doc_metadata}, title='{doc_title}', author='{doc_author}'")
                 
                 documents_used.append({
                     'document_id': doc_id,
                     'title': doc_title,
+                    'author': doc_author,
+                    'url': doc_url,
+                    'publish_date': doc_publish_date,
                     'chunks_contributed': usage_info['chunks'],
                     'characters_retrieved': usage_info['characters'],
                     'importance_weight': usage_info['weight'],
                     'status': 'used'
                 })
                 
-                source_attribution.append(f"{doc_title}: {usage_info['chunks']} chunks (weight: {usage_info['weight']:.1f})")
+                source_attribution.append(f"{doc_title} by {doc_author}: {usage_info['chunks']} chunks (weight: {usage_info['weight']:.1f})")
             
             documents_used.sort(key=lambda x: x['chunks_contributed'], reverse=True)
             
@@ -522,37 +582,119 @@ class SimpleRAGEngine:
     def _load_document_metadata(self) -> Dict[str, Dict]:
         """Load document metadata for document selection (enhanced with titles)."""
         try:
-            response = supabase.table("lindex_collections").select("id").eq(
-                "name", self.collection_name
-            ).execute()
+            # Use HTTP client directly to avoid SDK compatibility issues
+            from knowledge_gap_http_supabase import HTTPSupabaseClient
+            http_supabase = HTTPSupabaseClient()
+            response = http_supabase.table("lindex_documents").select(
+                "id, summary_short, summary_medium, doc_size, chunk_count, source_type, title, author, url, publish_date, in_vector_store, collectionId"
+            ).eq("in_vector_store", True).execute()
             
-            if not response.data:
-                return {}
+            logger.info(f"METADATA_LOAD - Found {len(response.data)} documents in vector store across all collections (via HTTP)")
+            logger.info(f"METADATA_LOAD - Target collection_name: {self.collection_name}")
             
-            collection_id = response.data[0]["id"]
+            # Get collection mapping using HTTP client
+            collections_response = http_supabase.table("lindex_collections").select("id, name").execute()
+            collection_map = {str(col["id"]): col["name"] for col in collections_response.data}
+            logger.info(f"Available collections: {collection_map}")
             
-            # UPDATED: Include title in the query
-            response = supabase.table("lindex_documents").select(
-                "id, summary_short, summary_medium, doc_size, chunk_count, source_type, title"
-            ).eq("in_vector_store", True).eq("collectionId", collection_id).execute()
+            # Filter documents that belong to collections that match our collection name
+            # or are in the same collection as documents we're interested in
+            target_collection_id = None
+            
+            # First, try to find our target collection
+            for col in collections_response.data:
+                if col["name"] == self.collection_name:
+                    target_collection_id = col["id"]
+                    break
+            
+            if target_collection_id:
+                logger.info(f"METADATA_LOAD - Loading metadata for collection: {self.collection_name} (ID: {target_collection_id})")
+                # Filter documents by target collection
+                filtered_docs = [doc for doc in response.data if doc.get("collectionId") == target_collection_id]
+                logger.info(f"METADATA_LOAD - Filtered to {len(filtered_docs)} documents for collection {target_collection_id}")
+            else:
+                logger.warning(f"METADATA_LOAD - Collection '{self.collection_name}' not found. Loading all documents in vector store.")
+                filtered_docs = response.data
+                logger.info(f"METADATA_LOAD - Using all {len(filtered_docs)} documents")
+            
+            logger.info(f"METADATA_LOAD - Found {len(filtered_docs)} documents for processing")
+            
+            # Debug: Check if document 208 is in the results
+            doc_208_found = False
+            for doc in filtered_docs:
+                if str(doc["id"]) == "208":
+                    doc_208_found = True
+                    collection_name = collection_map.get(str(doc.get("collectionId")), "Unknown")
+                    logger.info(f"Document 208 found: title='{doc.get('title')}', author='{doc.get('author')}', collection='{collection_name}' (ID: {doc.get('collectionId')})")
+                    break
+            
+            if not doc_208_found:
+                logger.warning("Document 208 not found in filtered results. Checking all documents...")
+                # Check if document 208 exists at all
+                doc_208_check = supabase.table("lindex_documents").select(
+                    "id, title, author, in_vector_store, collectionId"
+                ).eq("id", 208).execute()
+                
+                if doc_208_check.data:
+                    doc_208_data = doc_208_check.data[0]
+                    collection_name = collection_map.get(str(doc_208_data.get("collectionId")), "Unknown")
+                    logger.warning(f"Document 208 exists: title='{doc_208_data.get('title')}', author='{doc_208_data.get('author')}', collection='{collection_name}' (ID: {doc_208_data.get('collectionId')})")
+                else:
+                    logger.warning("Document 208 does not exist in lindex_documents table")
             
             metadata = {}
-            for doc in response.data:
+            for doc in filtered_docs:
                 doc_id = str(doc["id"])
+                collection_name = collection_map.get(str(doc.get("collectionId")), "Unknown")
+                # Safely handle summary fields that might be None
+                summary_short = doc.get("summary_short") or ""
+                summary_medium = doc.get("summary_medium") or ""
+                summary = summary_short or summary_medium
+                if summary and len(summary) > 200:
+                    summary = summary[:200]
+                
                 metadata[doc_id] = {
-                    "summary": doc.get("summary_short") or doc.get("summary_medium", "")[:200],
-                    "title": doc.get("title", f"Document {doc_id}"),  # NEW: Include title
+                    "summary": summary,
+                    "title": doc.get("title", f"Document {doc_id}"),
+                    "author": doc.get("author", "Unknown Author"),
+                    "url": doc.get("url", ""),
+                    "publish_date": doc.get("publish_date", ""),
                     "doc_size": doc.get("doc_size", 0),
                     "chunk_count": doc.get("chunk_count", 0),
                     "source_type": doc.get("source_type", "document"),
-                    "importance_weight": self._calculate_importance_weight(doc)  # Same calculation as old code
+                    "collection_name": collection_name,  # Add collection name for debugging
+                    "importance_weight": self._calculate_importance_weight(doc)
                 }
                 
+                # Debug: Log specific documents we're looking for
+                if doc_id in ["208", "212", "213"]:
+                    logger.info(f"DEBUG - Document {doc_id}: title='{doc.get('title')}', author='{doc.get('author')}', collection='{collection_name}'")
+                
             logger.info(f"Loaded metadata for {len(metadata)} documents")
+            logger.info(f"Metadata keys: {list(metadata.keys())}")
+            
+            if len(metadata) == 0:
+                logger.warning("⚠️ NO METADATA LOADED - This will cause 'Available metadata keys: []' error")
+                logger.warning(f"   Collection name: {self.collection_name}")
+                logger.warning(f"   Target collection ID: {target_collection_id}")
+                logger.warning(f"   Filtered documents count: {len(filtered_docs)}")
+                logger.warning(f"   Total vector store documents: {len(response.data)}")
+                
+                # Try to provide more diagnostic info
+                if len(response.data) == 0:
+                    logger.warning("   DIAGNOSIS: No documents found with in_vector_store = True")
+                elif target_collection_id is None:
+                    logger.warning(f"   DIAGNOSIS: Collection '{self.collection_name}' not found in available collections")
+                else:
+                    logger.warning(f"   DIAGNOSIS: No documents found in collection {target_collection_id}")
+            
             return metadata
             
         except Exception as e:
             logger.error(f"Error loading document metadata: {str(e)}")
+            logger.error(f"Collection name: {self.collection_name}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return {}
 
     # The _calculate_importance_weight method stays the same as in your old code
@@ -570,7 +712,7 @@ class SimpleRAGEngine:
         return size_weight * type_weight * chunk_weight
 
 
-    def query_agentic_iterative(self, query: str, max_iterations: int = 3, llm_provider: str = DEFAULT_LLM_PROVIDER) -> Dict[str, Any]:
+    def query_agentic_iterative(self, query: str, max_iterations: int = 3, llm_provider: str = DEFAULT_LLM_PROVIDER, balance_emphasis: str = None) -> Dict[str, Any]:
         """
         Iterative agentic query with multiple search rounds.
         An agent evaluates answer sufficiency and decides whether to continue searching.
@@ -721,18 +863,25 @@ class SimpleRAGEngine:
             source_attribution = []
             
             for doc_id, usage_info in all_documents_used.items():
-                doc_title = self.document_metadata.get(str(doc_id), {}).get('title', f'Document {doc_id}')
+                doc_metadata = self.document_metadata.get(str(doc_id), {})
+                doc_title = doc_metadata.get('title', f'Document {doc_id}')
+                doc_author = doc_metadata.get('author', 'Unknown Author')
+                doc_url = doc_metadata.get('url', '')
+                doc_publish_date = doc_metadata.get('publish_date', '')
                 
                 documents_used.append({
                     'document_id': doc_id,
                     'title': doc_title,
+                    'author': doc_author,
+                    'url': doc_url,
+                    'publish_date': doc_publish_date,
                     'chunks_contributed': usage_info['chunks'],
                     'iterations_appeared': usage_info['iterations_appeared'],
                     'status': 'used'
                 })
                 
                 source_attribution.append(
-                    f"{doc_title}: {usage_info['chunks']} chunks across iterations {usage_info['iterations_appeared']}"
+                    f"{doc_title} by {doc_author}: {usage_info['chunks']} chunks across iterations {usage_info['iterations_appeared']}"
                 )
             
             documents_used.sort(key=lambda x: x['chunks_contributed'], reverse=True)
@@ -765,13 +914,18 @@ class SimpleRAGEngine:
                 "searchQuality": "basic"  # ✅ FIXED: Set for error case too
             }
 
-    def query_truly_agentic(self, query: str, llm_provider: str = DEFAULT_LLM_PROVIDER) -> Dict[str, Any]:
+    def query_truly_agentic(self, query: str, llm_provider: str = DEFAULT_LLM_PROVIDER, balance_emphasis: str = None) -> Dict[str, Any]:
         """
         Truly agentic query that autonomously selects the best search strategy.
         Uses an agent to analyze the query and choose between simple, hybrid, or iterative approaches.
         """
         start_time = time.time()
-        logger.info(f"🤖🧠 Truly agentic query: {query}")
+        
+        # Auto-detect balance emphasis if not provided
+        if balance_emphasis is None:
+            balance_emphasis = self._detect_query_type(query)
+        
+        logger.info(f"🤖🧠 Truly agentic query: {query} (balance: {balance_emphasis})")
         
         try:
             # Get LLM
@@ -820,19 +974,22 @@ class SimpleRAGEngine:
                 result = self.query_simple(
                     query=query,
                     num_results=params.get('num_results', 5),
-                    llm_provider=llm_provider
+                    llm_provider=llm_provider,
+                    balance_emphasis=balance_emphasis
                 )
             elif strategy == 'HYBRID':
                 result = self.query_hybrid_enhanced(
                     query=query,
                     top_k=params.get('top_k', 10),
-                    llm_provider=llm_provider
+                    llm_provider=llm_provider,
+                    balance_emphasis=balance_emphasis
                 )
             else:  # ITERATIVE
                 result = self.query_agentic_iterative(
                     query=query,
                     max_iterations=params.get('max_iterations', 3),
-                    llm_provider=llm_provider
+                    llm_provider=llm_provider,
+                    balance_emphasis=balance_emphasis
                 )
             
             # Enhance result with meta-agent information
@@ -919,23 +1076,73 @@ class SimpleRAGEngine:
         
         return params
 
-    def _calculate_importance_weight(self, doc: Dict) -> float:
-        """Calculate importance weight for documents."""
+    def _calculate_importance_weight(self, doc: Dict, balance_emphasis: str = "comprehensive") -> float:
+        """Calculate importance weight for documents with configurable balance."""
         doc_size = doc.get("doc_size", 0)
         chunk_count = doc.get("chunk_count", 0)
         source_type = doc.get("source_type", "document")
         
-        size_weight = min(2.0, (doc_size / 50000))
-        type_weights = {"book": 1.5, "pdf": 1.3, "document": 1.0, "email": 0.8}
-        type_weight = type_weights.get(source_type, 1.0)
-        chunk_weight = min(1.5, (chunk_count / 30))
+        # Base weights for different document types
+        type_weights = {"book": 1.5, "pdf": 1.3, "document": 1.0, "email": 0.8, "article": 0.9, "news": 0.85}
+        base_type_weight = type_weights.get(source_type, 1.0)
         
-        return size_weight * type_weight * chunk_weight
+        # Apply balance emphasis
+        if balance_emphasis == "news_focused":
+            # Favor shorter, more recent content
+            type_weights = {"book": 0.8, "pdf": 0.9, "document": 1.0, "email": 0.7, "article": 1.2, "news": 1.3}
+            base_type_weight = type_weights.get(source_type, 1.0)
+            size_weight = min(1.2, (doc_size / 10000))  # Less aggressive size weighting
+            chunk_weight = min(1.1, (chunk_count / 20))  # Less chunk bias
+        elif balance_emphasis == "balanced":
+            # Moderate balance between comprehensive and recent
+            type_weights = {"book": 1.2, "pdf": 1.1, "document": 1.0, "email": 0.8, "article": 1.1, "news": 1.1}
+            base_type_weight = type_weights.get(source_type, 1.0)
+            size_weight = min(1.5, (doc_size / 30000))  # Moderate size weighting
+            chunk_weight = min(1.3, (chunk_count / 25))  # Moderate chunk bias
+        else:  # "comprehensive" (default)
+            # Original behavior - favor comprehensive sources
+            size_weight = min(2.0, (doc_size / 50000))
+            chunk_weight = min(1.5, (chunk_count / 30))
+        
+        return size_weight * base_type_weight * chunk_weight
 
-    def query_simple(self, query: str, num_results: int = 5, llm_provider: str = DEFAULT_LLM_PROVIDER) -> Dict[str, Any]:
+    def _detect_query_type(self, query: str) -> str:
+        """Detect query type to automatically determine balance emphasis."""
+        query_lower = query.lower()
+        
+        # News and current events indicators
+        news_indicators = [
+            "latest", "recent", "current", "today", "this week", "this month",
+            "2024", "2025", "breaking", "news", "update", "trending",
+            "happening now", "just released", "announced", "reported"
+        ]
+        
+        # Comprehensive research indicators
+        comprehensive_indicators = [
+            "comprehensive", "detailed", "complete", "thorough", "in-depth",
+            "everything about", "all about", "full analysis", "complete guide",
+            "comprehensive study", "extensive", "exhaustive"
+        ]
+        
+        news_score = sum(1 for indicator in news_indicators if indicator in query_lower)
+        comprehensive_score = sum(1 for indicator in comprehensive_indicators if indicator in query_lower)
+        
+        if news_score >= 2 or any(indicator in query_lower for indicator in ["latest", "recent", "current", "2024", "2025"]):
+            return "news_focused"
+        elif comprehensive_score >= 2 or any(indicator in query_lower for indicator in ["comprehensive", "detailed", "everything"]):
+            return "comprehensive"
+        else:
+            return "balanced"
+
+    def query_simple(self, query: str, num_results: int = 5, llm_provider: str = DEFAULT_LLM_PROVIDER, balance_emphasis: str = None) -> Dict[str, Any]:
         """Simple similarity search with proper document tracking."""
         start_time = time.time()
-        logger.info(f"🔍 Simple query: {query}")
+        
+        # Auto-detect balance emphasis if not provided
+        if balance_emphasis is None:
+            balance_emphasis = self._detect_query_type(query)
+        
+        logger.info(f"🔍 Simple query: {query} (balance: {balance_emphasis})")
         
         try:
             # Get LLM
@@ -965,11 +1172,41 @@ class SimpleRAGEngine:
                     "embedding_dimension": embedding_manager.get_dimension()
                 }
             
+            # Apply importance weighting with balance emphasis
+            weighted_nodes = []
+            doc_scores = {}
+            
+            for node in nodes:
+                doc_id = node.metadata.get('docid', '')
+                if doc_id:
+                    # Get document metadata and calculate importance weight
+                    doc_metadata = self.document_metadata.get(str(doc_id), {})
+                    weight = self._calculate_importance_weight(doc_metadata, balance_emphasis)
+                    
+                    # Apply weight to similarity score
+                    boosted_score = node.score * weight
+                    
+                    # Track best score per document
+                    if doc_id not in doc_scores or boosted_score > doc_scores[doc_id]['score']:
+                        doc_scores[doc_id] = {
+                            'score': boosted_score,
+                            'weight': weight,
+                            'original_score': node.score
+                        }
+                    
+                    # Update node score
+                    node.score = boosted_score
+                    weighted_nodes.append(node)
+            
+            # Sort by boosted scores and take top results
+            weighted_nodes.sort(key=lambda x: x.score, reverse=True)
+            selected_nodes = weighted_nodes[:num_results]
+            
             # Track document usage
             document_usage = {}
             context_parts = []
             
-            for i, node in enumerate(nodes[:num_results]):
+            for i, node in enumerate(selected_nodes):
                 doc_id = node.metadata.get('docid', 'unknown')
                 
                 # Track usage
@@ -978,7 +1215,8 @@ class SimpleRAGEngine:
                         document_usage[doc_id] = {
                             'chunks': 0,
                             'total_score': 0.0,
-                            'characters': 0
+                            'characters': 0,
+                            'weight': doc_scores.get(doc_id, {}).get('weight', 1.0)
                         }
                     document_usage[doc_id]['chunks'] += 1
                     document_usage[doc_id]['total_score'] += node.score
@@ -1009,18 +1247,64 @@ class SimpleRAGEngine:
             source_attribution = []
             
             for doc_id, usage_info in document_usage.items():
-                doc_title = self.document_metadata.get(str(doc_id), {}).get('title', f'Document {doc_id}')
+                doc_metadata = self.document_metadata.get(str(doc_id), {})
+                
+                # If metadata not found or has default values, try direct lookup
+                if not doc_metadata or doc_metadata.get('title') == f'Document {doc_id}':
+                    logger.warning(f"QUERY_SIMPLE - Metadata not found for document {doc_id}, attempting direct lookup...")
+                    logger.warning(f"QUERY_SIMPLE - Current collection_name: {self.collection_name}")
+                    logger.warning(f"QUERY_SIMPLE - Available metadata keys: {list(self.document_metadata.keys())}")
+                    try:
+                        # Use HTTPSupabaseClient for direct lookup to avoid compatibility issues
+                        from knowledge_gap_http_supabase import HTTPSupabaseClient
+                        http_supabase = HTTPSupabaseClient()
+                        direct_response = http_supabase.table("lindex_documents").select(
+                            "id, title, author, url, publish_date, in_vector_store, collectionId"
+                        ).eq("id", doc_id).execute()
+                        
+                        if direct_response.data:
+                            direct_doc = direct_response.data[0]
+                            doc_title = direct_doc.get('title', f'Document {doc_id}')
+                            doc_author = direct_doc.get('author', 'Unknown Author')
+                            doc_url = direct_doc.get('url', '')
+                            doc_publish_date = direct_doc.get('publish_date', '')
+                            collection_id = direct_doc.get('collectionId')
+                            logger.info(f"QUERY_SIMPLE - Direct lookup SUCCESS for doc {doc_id}: title='{doc_title}', author='{doc_author}', url='{doc_url}', publish_date='{doc_publish_date}', collectionId={collection_id}")
+                        else:
+                            doc_title = f'Document {doc_id}'
+                            doc_author = 'Unknown Author'
+                            doc_url = ''
+                            doc_publish_date = ''
+                            logger.warning(f"QUERY_SIMPLE - Document {doc_id} not found in database")
+                    except Exception as e:
+                        logger.error(f"QUERY_SIMPLE - Error in direct lookup for document {doc_id}: {e}")
+                        doc_title = f'Document {doc_id}'
+                        doc_author = 'Unknown Author'
+                        doc_url = ''
+                        doc_publish_date = ''
+                else:
+                    doc_title = doc_metadata.get('title', f'Document {doc_id}')
+                    doc_author = doc_metadata.get('author', 'Unknown Author')
+                    doc_url = doc_metadata.get('url', '')
+                    doc_publish_date = doc_metadata.get('publish_date', '')
+                    logger.info(f"QUERY_SIMPLE - Using cached metadata for doc {doc_id}: title='{doc_title}', author='{doc_author}', url='{doc_url}', publish_date='{doc_publish_date}'")
+                
+                # Debug: Log what we're getting for each document
+                logger.info(f"QUERY_SIMPLE - QUERY DEBUG - Document {doc_id}: metadata={doc_metadata}, title='{doc_title}', author='{doc_author}'")
                 
                 documents_used.append({
                     'document_id': doc_id,
                     'title': doc_title,
+                    'author': doc_author,
+                    'url': doc_url,
+                    'publish_date': doc_publish_date,
                     'chunks_contributed': usage_info['chunks'],
                     'characters_retrieved': usage_info['characters'],
                     'average_score': round(usage_info['total_score'] / usage_info['chunks'], 4),
                     'status': 'used'
                 })
                 
-                source_attribution.append(f"{doc_title}: {usage_info['chunks']} chunks")
+                source_attribution.append(f"{doc_title} by {doc_author}: {usage_info['chunks']} chunks")
             
             documents_used.sort(key=lambda x: x['chunks_contributed'], reverse=True)
             
@@ -1049,7 +1333,7 @@ class SimpleRAGEngine:
                 "error": str(e),
                 "searchQuality": "basic"  # ✅ FIXED: Set even for errors
             }
-    def query_agentic_fixed(self, query: str, max_docs: int = 3, llm_provider: str = DEFAULT_LLM_PROVIDER, verbose_mode: str = "balanced") -> Dict[str, Any]:
+    def query_agentic_fixed(self, query: str, max_docs: int = 3, llm_provider: str = DEFAULT_LLM_PROVIDER, verbose_mode: str = "balanced", balance_emphasis: str = None) -> Dict[str, Any]:
         """ENHANCED agentic query with MULTI-TOOL ENFORCEMENT - Prevents single-document responses."""
         start_time = time.time()
         logger.info(f"🤖 ENHANCED MULTI-TOOL AGENTIC query: {query}")
@@ -1526,11 +1810,14 @@ class SimpleRAGEngine:
                     documents_used.append({
                         'document_id': doc_id,
                         'title': doc_info['title'],
+                        'author': doc_info.get('author', 'Unknown Author'),
+                        'url': doc_info.get('url', ''),
+                        'publish_date': doc_info.get('publish_date', ''),
                         'chunks_contributed': usage['chunks'],
                         'characters_retrieved': usage['characters'],
                         'status': 'used'
                     })
-                    source_attribution.append(f"{doc_info['title']}: {usage['chunks']} chunks")
+                    source_attribution.append(f"{doc_info['title']} by {doc_info.get('author', 'Unknown Author')}: {usage['chunks']} chunks")
             
             total_time = time.time() - start_time
             
@@ -1605,8 +1892,16 @@ def get_rag_engine(collection_name: str) -> SimpleRAGEngine:
         _engines[collection_name] = SimpleRAGEngine(collection_name)
     else:
         logger.info(f"📁 Using cached RAG engine for collection: {collection_name}")
+        # Force refresh metadata to ensure we have the latest data
+        logger.info(f"🔄 Refreshing metadata for collection: {collection_name}")
+        try:
+            _engines[collection_name].document_metadata = _engines[collection_name]._load_document_metadata()
+            logger.info(f"✅ Metadata refresh completed. Loaded {len(_engines[collection_name].document_metadata)} documents")
+        except Exception as e:
+            logger.error(f"❌ Error refreshing metadata: {e}")
     
     return _engines[collection_name]
+
 
 def _process_document_background(docid, collection_name, source_type="document"):
     """Background task for processing documents."""
@@ -1830,8 +2125,22 @@ def _execute_async_query(job_id, data):
 ##**************************************
 
 def create_app():
-
+    """Create Flask application with error handling and memory management."""
+    
+    # Add memory monitoring
+    import psutil
+    import gc
+    
+    def log_memory_usage():
+        process = psutil.Process()
+        memory_info = process.memory_info()
+        memory_mb = memory_info.rss / 1024 / 1024
+        logger.info(f"🧠 Memory usage: {memory_mb:.1f} MB")
+        return memory_mb
+    
     try:
+        logger.info("🚀 Starting Flask application creation...")
+        log_memory_usage()
         app = Flask(__name__)
         app.config['UPLOAD_FOLDER'] = '/tmp/uploads'
         app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024
@@ -1845,6 +2154,15 @@ def create_app():
         __main__.document_processor = document_processor
         __main__.background_executor = background_executor
    
+        @app.route('/health', methods=['GET'])
+        def health_check():
+            """Simple health check endpoint for Docker/load balancers"""
+            return jsonify({
+                "status": "healthy",
+                "service": "rag-system",
+                "timestamp": datetime.now().isoformat()
+            }), 200
+        
         @app.route('/embedding_status', methods=['GET'])
         def embedding_status():
             """Get current embedding configuration status."""
@@ -2098,6 +2416,7 @@ def create_app():
                 collection_name = data.get('collection_name', '').strip()
                 llm_provider = data.get('llm', DEFAULT_LLM_PROVIDER)
                 top_k = data.get('top_k', 10)
+                balance_emphasis = data.get('balance_emphasis', None)  # New parameter
                 
                 if not query:
                     return jsonify({"status": "error", "error": "Query is required"}), 400
@@ -2105,7 +2424,7 @@ def create_app():
                     return jsonify({"status": "error", "error": "Collection name is required"}), 400
                 
                 engine = get_rag_engine(collection_name)
-                result = engine.query_hybrid_enhanced(query, top_k=top_k, llm_provider=llm_provider)
+                result = engine.query_hybrid_enhanced(query, top_k=top_k, llm_provider=llm_provider, balance_emphasis=balance_emphasis)
                 
                 return jsonify(result)
                 
@@ -2171,6 +2490,7 @@ def create_app():
                 collection_name = data.get('collection_name', '').strip()
                 llm_provider = data.get('llm', DEFAULT_LLM_PROVIDER)
                 num_results = data.get('num_results', 5)
+                balance_emphasis = data.get('balance_emphasis', None)  # New parameter
                 
                 if not query:
                     return jsonify({"status": "error", "error": "Query is required"}), 400
@@ -2178,7 +2498,7 @@ def create_app():
                     return jsonify({"status": "error", "error": "Collection name is required"}), 400
                 
                 engine = get_rag_engine(collection_name)
-                result = engine.query_simple(query, num_results=num_results, llm_provider=llm_provider)
+                result = engine.query_simple(query, num_results=num_results, llm_provider=llm_provider, balance_emphasis=balance_emphasis)
                 
                 return jsonify(result)
                 
@@ -2234,13 +2554,13 @@ def create_app():
                 
                 # Get gap filler documents that need processing
                 docs_response = supabase.table("lindex_documents").select(
-                    "id, title, processing_status, source_type"
-                ).eq("source_type", "gap_filler").eq("processing_status", "pending").execute()
+                    "id, title, processing_status, source_type, user_id"
+                ).eq("source_type", "gap_filler").eq("user_id", user_id).in_("processing_status", ["pending", "pending_processor"]).execute()
                 
                 if not docs_response.data:
                     return jsonify({
                         "status": "success",
-                        "message": "No pending gap filler documents found",
+                        "message": f"No pending or pending_processor gap filler documents found for user {user_id}",
                         "processed_count": 0
                     })
                 
@@ -2368,6 +2688,7 @@ def create_app():
                 query = data.get('query')
                 method = data.get('method', 'simple')
                 llm_provider = data.get('llm', DEFAULT_LLM_PROVIDER)
+                balance_emphasis = data.get('balance_emphasis', None)  # New parameter
                 
                 logger.info(f"Starting async job {job_id} for query: {query}...")
                 logger.info(f"Method: {method}, LLM: {llm_provider}")
@@ -2409,37 +2730,41 @@ def create_app():
                         job_info['progress'] = 20
                         job_info['current_step'] = f'Executing {method} search...'
                         
-                        # Execute query based on method - FIXED: Remove importance_weight parameter
+                        # Execute query based on method with balance emphasis
                         if method == 'simple':
                             result = rag_engine.query_simple(
                                 query, 
                                 num_results=data.get('num_results', 5),
-                                llm_provider=llm_provider
+                                llm_provider=llm_provider,
+                                balance_emphasis=balance_emphasis
                             )
                         elif method == 'hybrid_enhanced':
-                            # FIXED: Only pass valid parameters
                             result = rag_engine.query_hybrid_enhanced(
                                 query,
                                 top_k=data.get('top_k', 10),
-                                llm_provider=llm_provider
+                                llm_provider=llm_provider,
+                                balance_emphasis=balance_emphasis
                             )
                         elif method == 'agentic_fixed':
                             result = rag_engine.query_agentic_fixed(
                                 query,
                                 max_docs=data.get('max_docs', 3),
                                 llm_provider=llm_provider,
-                                verbose_mode=data.get('verbose_mode', 'balanced') 
+                                verbose_mode=data.get('verbose_mode', 'balanced'),
+                                balance_emphasis=balance_emphasis
                             )
                         elif method == 'agentic_iterative':
                             result = rag_engine.query_agentic_iterative(
                                 query,
                                 max_iterations=data.get('max_iterations', 3),
-                                llm_provider=llm_provider
+                                llm_provider=llm_provider,
+                                balance_emphasis=balance_emphasis
                             )
                         elif method == 'truly_agentic':
                             result = rag_engine.query_truly_agentic(
                                 query,
-                                llm_provider=llm_provider
+                                llm_provider=llm_provider,
+                                balance_emphasis=balance_emphasis
                             )
                         else:
                             raise ValueError(f"Unknown method: {method}")
@@ -3409,14 +3734,20 @@ def create_app():
                 logger.info(f"   - document_processor: {type(document_processor).__name__}")
                 logger.info(f"   - background_executor: {type(background_executor).__name__}")
                 
+                log_memory_usage()
+                
                 # Integrate with full dependencies
                 integrate_knowledge_gap_filler_http(app)
                 logger.info("✅ HTTP-based Knowledge Gap Filler integrated successfully")
+                
+                log_memory_usage()
                 
             except Exception as e:
                 logger.error(f"❌ Failed to integrate Knowledge Gap Filler: {e}")
                 import traceback
                 logger.error(f"   Full traceback: {traceback.format_exc()}")
+                # Force garbage collection on error
+                gc.collect()
         else:
             logger.warning("⚠️ Knowledge Gap Filler not available - routes not added")
 
@@ -3427,9 +3758,24 @@ def create_app():
         return None
 
 if __name__ == '__main__':
-    app = create_app()
-    if app:
-        logger.info("🚀 Starting Flask application...")
-        app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
-    else:
-        logger.error("❌ Failed to create Flask application")
+    try:
+        app = create_app()
+        if app:
+            logger.info("🚀 Starting Flask application...")
+            # Add memory monitoring before starting
+            import psutil
+            process = psutil.Process()
+            memory_info = process.memory_info()
+            memory_mb = memory_info.rss / 1024 / 1024
+            logger.info(f"🧠 Final memory usage before start: {memory_mb:.1f} MB")
+            
+            # Start with conservative settings
+            app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), threaded=True)
+        else:
+            logger.error("❌ Failed to create Flask application")
+    except KeyboardInterrupt:
+        logger.info("🛑 Server stopped by user")
+    except Exception as e:
+        logger.error(f"❌ Server startup failed: {e}")
+        import traceback
+        logger.error(f"   Traceback: {traceback.format_exc()}")
