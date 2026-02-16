@@ -1,26 +1,15 @@
 ###############################################################################
-# ⚠️  CRITICAL: PYTHON VERSION REQUIREMENT  ⚠️
+# ⚠️  PYTHON VERSION: 3.11  ⚠️
 ###############################################################################
 # 
-# This project REQUIRES Python 3.8-3.13 (NOT 3.14+)
+# This project uses Python 3.11 for best compatibility and build speed.
 # 
-# ⚠️  Python 3.14 has LIMITED SUPPORT:
-#   - onnxruntime: Latest available is 1.19.2 (not 1.23.2)
-#   - chromadb: May have compatibility issues
-#   - Many packages don't have wheels for Python 3.14 yet
-#
-# ✅ RECOMMENDED: Use Python 3.13.x for best compatibility
+# ✅ RECOMMENDED: Use Python 3.11.x
 # 
-# To create venv with correct Python version:
-#   python3.13 -m venv venv
+# To create venv:
+#   python3.11 -m venv venv
 #   source venv/bin/activate
 #   pip install -r requirements.txt
-#
-# OR use the setup script:
-#   bash setup_venv.sh
-#
-# DO NOT use: python -m venv venv  (may default to Python 3.14)
-# DO NOT use: python3 -m venv venv  (may default to Python 3.14)
 #
 ###############################################################################
 
@@ -33,23 +22,21 @@ flask-caching==2.1.0
 
 # Core Dependencies
 python-dotenv==1.0.1
-Pillow>=11.0.0
+Pillow==10.3.0
 
 # AI/ML Core
-# openai>=1.30.0  # Allow newer versions for better model support
-openai==1.50.0
-numpy>=2.1.0
-scikit-learn>=1.5.0
+openai>=1.30.0
+numpy==1.26.4
+scikit-learn==1.5.0
 joblib==1.4.2
-transformers>=4.48.0
+transformers==4.41.2
 tiktoken==0.7.0
-torch>=2.6.0
-matplotlib>=3.9.0
-psutil>=5.9.8
+torch==2.3.1
+matplotlib==3.9.0
+psutil==5.9.8
 
 # LlamaIndex Core
-llama-index>=0.12.0
-llama-index-core>=0.12.0
+llama-index
 llama-index-llms-deepseek
 llama-index-llms-anthropic
 llama-index-llms-gemini
@@ -61,12 +48,8 @@ llama-index-readers-llama-parse
 
 # Database & Storage
 supabase==2.5.0
-chromadb==0.5.0
-# onnxruntime: Version depends on Python version
-# Python 3.14: Latest available is 1.19.2 (use <1.20.0)
-# Python 3.13: Can use 1.23.2 (use >=1.20.0)
-# Pip will automatically select the highest compatible version
-onnxruntime>=1.18.0
+chromadb==0.4.24
+onnxruntime==1.18.0
 vecs==0.4.5
 pgvector==0.3.6
 psycopg2-binary==2.9.9
@@ -76,7 +59,7 @@ asyncpg==0.29.0
 mcp>=1.0.0
 fastmcp>=2.0.0
 arxiv==2.1.0
-linkup-sdk==0.7.0
+linkup-sdk==0.2.0
 
 # Additional Dependencies
 nltk>=3.8.1
