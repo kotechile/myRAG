@@ -17,8 +17,26 @@ services:
       - ./uploads:/app/uploads
     restart: always
 
+    # Explicitly configure Traefik for Port 80 to ensure routing
+    # AND explicitly enable the coolify network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=coolify"
+      - "traefik.http.routers.rag-system.rule=Host(`rag.aichieve.net`)"
+      - "traefik.http.routers.rag-system.entrypoints=websecure"
+      - "traefik.http.routers.rag-system.tls.certresolver=letsencrypt"
+      - "traefik.http.services.rag-system.loadbalancer.server.port=80"
+
     healthcheck:
       test: [ "CMD-SHELL", "curl -f http://localhost:80/health || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 5
+
+    networks:
+      - coolify
+      - default
+
+networks:
+  coolify:
+    external: true
