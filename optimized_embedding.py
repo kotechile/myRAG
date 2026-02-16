@@ -244,13 +244,44 @@ class EmbeddingPipeline:
             return self._vector_stores[cache_key]
             
         try:
-            # Create new vector store with correct dimension
-            logger.info(f"🔧 Creating new vector store for {collection_name} with dimension: {dimension}")
-            vector_store = SupabaseVectorStore(
-                postgres_connection_string=self.db_connection,
-                collection_name=collection_name,
-                dimension=dimension  # Use dynamic dimension
-            )
+            # Try to connect to existing vector store first
+            logger.info(f"🔍 Attempting to connect to existing vector store: {collection_name}")
+            
+            # Try to create vector store with compatibility handling
+            try:
+                vector_store = SupabaseVectorStore(
+                    postgres_connection_string=self.db_connection,
+                    collection_name=collection_name,
+                    dimension=dimension  # Use dynamic dimension
+                )
+                logger.info(f"✅ Successfully connected to existing vector store: {collection_name}")
+                
+            except Exception as compat_error:
+                error_str = str(compat_error)
+                
+                # Handle PostgreSQL constraint violations - collection already exists
+                if "pg_type_typname_nsp_index" in error_str or "duplicate key value violates unique constraint" in error_str:
+                    logger.info(f"📋 Collection '{collection_name}' already exists, connecting to existing collection")
+                    # Try without dimension parameter to connect to existing collection
+                    try:
+                        vector_store = SupabaseVectorStore(
+                            postgres_connection_string=self.db_connection,
+                            collection_name=collection_name
+                        )
+                        logger.info(f"✅ Successfully connected to existing collection: {collection_name}")
+                    except Exception as connect_error:
+                        logger.error(f"Failed to connect to existing collection {collection_name}: {str(connect_error)}")
+                        raise connect_error
+                        
+                elif "http_client" in error_str or "SyncPostgrestClient" in error_str:
+                    logger.warning(f"⚠️ Supabase compatibility issue detected, trying alternative approach")
+                    # Try without dimension parameter as fallback
+                    vector_store = SupabaseVectorStore(
+                        postgres_connection_string=self.db_connection,
+                        collection_name=collection_name
+                    )
+                else:
+                    raise compat_error
             
             # Cache for future use with dimension-specific key
             self._vector_stores[cache_key] = vector_store
@@ -258,7 +289,7 @@ class EmbeddingPipeline:
             return vector_store
             
         except Exception as e:
-            logger.error(f"Vector store creation error for {collection_name}: {str(e)}")
+            logger.error(f"Vector store connection error for {collection_name}: {str(e)}")
             raise
 
 
@@ -353,7 +384,7 @@ class BatchDocumentProcessor:
         
         return results
         
-    def process_document(self, docid: str, collection_name: str, source_type: str = "document") -> Dict[str, Any]:
+    def process_document(self, docid: str, collection_name: str, source_type: str = "document", extra_metadata: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Process a single document through the complete pipeline.
         
@@ -361,6 +392,7 @@ class BatchDocumentProcessor:
             docid: Document ID
             collection_name: Collection name for vector storage
             source_type: Source type of the document (e.g., 'pdf', 'webpage', 'email')
+            extra_metadata: Optional dictionary of additional metadata (e.g., citations)
             
         Returns:
             Dict with processing results
@@ -386,11 +418,15 @@ class BatchDocumentProcessor:
                 result['error'] = "Document content not found"
                 return result
                 
-            # 2. Chunk document with source_type
+            # 2. Chunk document with source_type and extra_metadata
+            chunk_metadata = {'collection_name': collection_name, 'source_type': source_type}
+            if extra_metadata:
+                chunk_metadata.update(extra_metadata)
+                
             nodes = self.chunker.chunk_document(
                 text=doc_content,
                 docid=docid,
-                metadata={'collection_name': collection_name, 'source_type': source_type},
+                metadata=chunk_metadata,
                 source_type=source_type  # Pass source_type to chunker
             )
             
@@ -434,12 +470,24 @@ class BatchDocumentProcessor:
     def _fetch_document(self, docid: str) -> Optional[str]:
         """Fetch document content from storage."""
         try:
-            response = self.supabase_client.table("lindex_documents").select(
-                "parsedText"
-            ).eq("id", docid).execute()
-            
-            if response.data and response.data[0].get('parsedText'):
-                return response.data[0]['parsedText']
+            # Check if we're using HTTPSupabaseClient
+            if hasattr(self.supabase_client, 'execute_query'):
+                # Use HTTP client method
+                response = self.supabase_client.execute_query(
+                    'GET',
+                    f'lindex_documents?select=parsedText&id=eq.{docid}'
+                )
+                
+                if response.get('success') and response.get('data') and response['data']:
+                    return response['data'][0].get('parsedText')
+            else:
+                # Use regular Supabase client method
+                response = self.supabase_client.table("lindex_documents").select(
+                    "parsedText"
+                ).eq("id", docid).execute()
+                
+                if response.data and response.data[0].get('parsedText'):
+                    return response.data[0]['parsedText']
                 
             return None
             
@@ -487,7 +535,11 @@ class BatchDocumentProcessor:
             if summary_result.get('summary_medium'):
                 update_data["summary_medium"] = summary_result['summary_medium']
                 
-            # Update document record
+            # Update document record (remove embedding_dimension if it doesn't exist in schema)
+            # Remove embedding_dimension from update_data to avoid schema errors
+            if "embedding_dimension" in update_data:
+                del update_data["embedding_dimension"]
+            
             self.supabase_client.table("lindex_documents").update(
                 update_data
             ).eq("id", docid).execute()

@@ -1903,7 +1903,7 @@ def get_rag_engine(collection_name: str) -> SimpleRAGEngine:
     return _engines[collection_name]
 
 
-def _process_document_background(docid, collection_name, source_type="document"):
+def _process_document_background(docid, collection_name, source_type="document", extra_metadata=None):
     """Background task for processing documents."""
     try:
         supabase.table("lindex_documents").update({
@@ -1925,7 +1925,8 @@ def _process_document_background(docid, collection_name, source_type="document")
         result = document_processor.process_document(
             docid=docid, 
             collection_name=collection_name,
-            source_type=source_type
+            source_type=source_type,
+            extra_metadata=extra_metadata
         )
         
         if result.get('success', False):
@@ -2249,6 +2250,16 @@ def create_app():
                 file = request.files['file']
                 docid = request.form['docid']
                 collection_name = request.form.get('collection_name', 'default_collection')
+                
+                # Parse metadata if provided
+                extra_metadata = {}
+                metadata_str = request.form.get('metadata')
+                if metadata_str:
+                    try:
+                        extra_metadata = json.loads(metadata_str)
+                        logger.info(f"Received metadata for doc {docid}: {extra_metadata.keys()}")
+                    except Exception as e:
+                        logger.warning(f"Failed to parse metadata for doc {docid}: {e}")
 
                 logger.info(f"Upload started for document {docid}, collection = {collection_name}")
 
@@ -2299,7 +2310,8 @@ def create_app():
                         _process_document_background,
                         docid,
                         collection_name,
-                        source_type
+                        source_type,
+                        extra_metadata
                     )
                     
                     processing_time = time.time() - start_time
