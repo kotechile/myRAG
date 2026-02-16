@@ -6,16 +6,10 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: rag-system
-    ports:
-      # Map container port 8080 to host port 8081 (or env var HOST_PORT)
-      # This avoids conflict with other services on 8080
-      - "${HOST_PORT:-8081}:8080"
-    # Explicitly expose port for Coolify/Proxy detection
+    # In Coolify/Traefik, we rely on internal routing to the exposed port.
+    # We remove host binding to avoid conflicts and let Coolify handle ingress.
     expose:
       - "8080"
-    # Coolify/Production Configuration
-    # In Coolify, environment variables should be set in the UI
-    # We keep "build" context for local testing or if Coolify builds from repo
     environment:
       - PORT=8080
       - FLASK_ENV=production
@@ -25,14 +19,10 @@ services:
       - ./uploads:/app/uploads
     restart: always
     healthcheck:
-      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" ]
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/query_hybrid_enhanced/health')" ]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-    networks:
-      - rag-network
+    # Removed custom networks to use default bridge for Coolify compatibility
 
-networks:
-  rag-network:
-    driver: bridge
