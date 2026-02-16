@@ -1,3 +1,56 @@
+## __Setup & Installation__
+
+### ⚠️ Python Version Requirement
+
+**This project REQUIRES Python 3.8-3.13 (NOT 3.14+)**
+
+ChromaDB and onnxruntime do NOT support Python 3.14 yet. If you use Python 3.14, installation will fail.
+
+### Quick Setup
+
+**Option 1: Docker Setup (Recommended for Production)**
+```bash
+# Create .env file with your API keys (see DOCKER.md)
+# Then build and run:
+docker-compose up -d
+
+# Or use the helper script:
+./docker-run.sh build
+./docker-run.sh run
+
+# View logs:
+docker-compose logs -f
+```
+
+**Option 2: Automated Setup (Local Development)**
+```bash
+./setup_venv.sh
+source venv/bin/activate
+```
+
+**Option 3: Manual Setup**
+```bash
+# Use python3.13 explicitly (DO NOT use 'python' or 'python3' as they may default to 3.14)
+python3.13 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### Verify Installation
+
+**For Docker:**
+```bash
+curl http://localhost:8080/health
+```
+
+**For Local:**
+```bash
+python --version  # Should show Python 3.13.x
+pip list | grep onnxruntime  # Should show onnxruntime>=1.19.0
+```
+
+---
 
 ## __System Overview__
 

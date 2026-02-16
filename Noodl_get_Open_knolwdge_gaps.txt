@@ -1,0 +1,365 @@
+
+// =============================================================================
+// 🚨 DEBUG/WORKAROUND: Directly Query Supabase for Open Knowledge Gaps
+// =============================================================================
+
+const supabase = await Noodl.Variables.supabase;
+const userData = await Noodl.Variables.supabase.auth.getUser();
+
+async function getOpenKnowledgeGaps() {
+    try {
+        const user_id = userData.data.user.id;
+        console.log('🔍 Directly querying Supabase for open knowledge gaps for user:', user_id);
+
+        // Query the titles table for records that are NEW status and not closed
+        // (Status must be 'NEW' or 'New' AND knowledge_gaps_closed must be false or null)
+        let { data: titles, error } = await supabase
+            .from('Titles')
+            .select('*')
+            .eq('user_id', user_id)
+            .in('status', ['NEW', 'New'])
+            .or('knowledge_gaps_closed.eq.false,knowledge_gaps_closed.is.null');
+
+        if (error) {
+            throw new Error('Supabase query error: ' + error.message);
+        }
+
+        console.log('📊 Query results:', {
+            titlesFound: titles ? titles.length : 0,
+            titles: titles ? titles.map(t => ({ id: t.id, status: t.status, knowledge_gaps_closed: t.knowledge_gaps_closed, Title: t.Title })) : []
+        });
+
+        if (!titles || titles.length === 0) {
+            Outputs.success();
+            Outputs.gapsFound = 0;
+            Outputs.knowledgeGaps = [];
+            Outputs.originalGaps = [];
+            Outputs.hasGaps = false;
+            Outputs.titleIds = [];
+            Outputs.user_id = user_id;
+            Outputs.message = 'No open knowledge gaps found (all gaps may be closed)';
+            Outputs.detailedMessage = 'All knowledge gaps appear to be closed. No processing needed.';
+            Outputs.recommendedAction = 'none';
+            Outputs.canBulkProcess = false;
+            Outputs.shouldBulkProcess = false;
+            Outputs.insights = {
+                highPriorityCount: 0,
+                mediumPriorityCount: 0,
+                lowPriorityCount: 0,
+                estimatedTotalTime: 0,
+                bulkProcessingRecommended: false,
+                processingStrategy: 'No processing needed'
+            };
+            return;
+        }
+
+        // Map the titles to a "gap" format for compatibility
+        const knowledgeGaps = titles.map((title, idx) => {
+            // Fallbacks for missing fields
+            const priority_score = title.priority_score !== undefined
+                ? (typeof title.priority_score === 'number' ? title.priority_score : (
+                    title.priority_level === 'high' ? 0.9 :
+                    title.priority_level === 'medium' ? 0.6 : 0.3
+                ))
+                : 0.5;
+            return {
+                title_id: title.id,
+                title: title.Title,
+                priority_score,
+                priority_label: priority_score >= 0.8 ? 'High' : priority_score >= 0.5 ? 'Medium' : 'Low',
+                data_types_needed: [], // You can enhance this if you have more info
+                rank: idx + 1,
+                estimated_processing_time: 2,
+                recommended_action: priority_score >= 0.8 ? 'process_first' : (priority_score >= 0.5 ? 'medium_priority' : 'low_priority'),
+                ...title
+            };
+        });
+
+        // Sort by priority_score descending
+        const sortedGaps = knowledgeGaps.sort((a, b) => (b.priority_score || 0) - (a.priority_score || 0));
+
+        // Calculate insights
+        const insights = {
+            highPriorityCount: sortedGaps.filter(g => g.priority_score >= 0.8).length,
+            mediumPriorityCount: sortedGaps.filter(g => g.priority_score >= 0.5 && g.priority_score < 0.8).length,
+            lowPriorityCount: sortedGaps.filter(g => g.priority_score < 0.5).length,
+            estimatedTotalTime: sortedGaps.reduce((sum, g) => sum + (g.estimated_processing_time || 2), 0),
+            bulkProcessingRecommended: sortedGaps.length > 2,
+            processingStrategy: sortedGaps.length === 0
+                ? 'No processing needed'
+                : sortedGaps.length === 1
+                    ? 'Single gap processing recommended'
+                    : sortedGaps.length <= 3
+                        ? 'Sequential processing or small batch'
+                        : 'Bulk processing recommended for efficiency'
+        };
+
+        Outputs.success();
+        Outputs.gapsFound = sortedGaps.length;
+        Outputs.knowledgeGaps = sortedGaps;
+        Outputs.originalGaps = sortedGaps;
+        Outputs.hasGaps = sortedGaps.length > 0;
+        Outputs.analysisTimestamp = new Date().toISOString();
+        Outputs.user_id = user_id;
+        Outputs.insights = insights;
+        Outputs.highPriorityCount = insights.highPriorityCount;
+        Outputs.mediumPriorityCount = insights.mediumPriorityCount;
+        Outputs.lowPriorityCount = insights.lowPriorityCount;
+        Outputs.estimatedTotalTime = insights.estimatedTotalTime;
+        Outputs.bulkProcessingRecommended = insights.bulkProcessingRecommended;
+        Outputs.processingStrategy = insights.processingStrategy;
+
+        if (sortedGaps.length > 0) {
+            Outputs.titleIds = sortedGaps.map(gap => gap.title_id).filter(id => id);
+            const priorityBreakdown = insights.highPriorityCount > 0
+                ? ` (${insights.highPriorityCount} high priority)`
+                : insights.mediumPriorityCount > 0
+                    ? ` (${insights.mediumPriorityCount} medium priority)`
+                    : '';
+            Outputs.message = `Found ${sortedGaps.length} titles with open knowledge gaps${priorityBreakdown}`;
+            Outputs.detailedMessage = `${sortedGaps.length} gaps found: ${insights.highPriorityCount} high, ${insights.mediumPriorityCount} medium, ${insights.lowPriorityCount} low priority. ${insights.processingStrategy}`;
+            Outputs.recommendedAction = insights.bulkProcessingRecommended
+                ? 'bulk_process'
+                : sortedGaps.length === 1
+                    ? 'single_process'
+                    : 'sequential_process';
+            Outputs.canBulkProcess = sortedGaps.length > 1;
+            Outputs.shouldBulkProcess = insights.bulkProcessingRecommended;
+        } else {
+            Outputs.titleIds = [];
+            Outputs.message = 'No open knowledge gaps found (all gaps may be closed)';
+            Outputs.detailedMessage = 'All knowledge gaps appear to be closed. No processing needed.';
+            Outputs.recommendedAction = 'none';
+            Outputs.canBulkProcess = false;
+            Outputs.shouldBulkProcess = false;
+        }
+
+    } catch (error) {
+        console.error('❌ Gap analysis error:', error);
+        Outputs.success();
+        Outputs.error = error.message;
+        Outputs.gapsFound = 0;
+        Outputs.knowledgeGaps = [];
+        Outputs.originalGaps = [];
+        Outputs.hasGaps = false;
+        Outputs.titleIds = [];
+        Outputs.message = `Connection error: ${error.message}`;
+        Outputs.detailedMessage = `Failed to connect to knowledge gap analysis service: ${error.message}`;
+        Outputs.recommendedAction = 'check_connection';
+        Outputs.insights = {
+            error: true,
+            message: error.message,
+            type: 'connection_error'
+        };
+    }
+}
+
+// =============================================================================
+// Helper Functions (not used in this direct Supabase version, but kept for compatibility)
+// =============================================================================
+
+function estimateProcessingTime(gap) {
+    const baseTime = 2;
+    const dataTypeMultiplier = (gap.data_types_needed?.length || 1) * 0.5;
+    const priorityMultiplier = gap.priority_score >= 0.8 ? 1.2 :
+        gap.priority_score >= 0.5 ? 1.0 : 0.8;
+    return Math.ceil(baseTime * dataTypeMultiplier * priorityMultiplier);
+}
+
+function getRecommendedAction(gap, index, totalGaps) {
+    if (gap.priority_score >= 0.8) {
+        return index === 0 ? 'process_first' : 'high_priority';
+    } else if (gap.priority_score >= 0.5) {
+        return 'medium_priority';
+    } else {
+        return totalGaps > 5 ? 'batch_with_others' : 'low_priority';
+    }
+}
+
+function calculateProcessingInsights(gaps) {
+    const insights = {
+        highPriorityCount: 0,
+        mediumPriorityCount: 0,
+        lowPriorityCount: 0,
+        estimatedTotalTime: 0,
+        bulkProcessingRecommended: false,
+        processingStrategy: ''
+    };
+
+    gaps.forEach(gap => {
+        if (gap.priority_score >= 0.8) {
+            insights.highPriorityCount++;
+        } else if (gap.priority_score >= 0.5) {
+            insights.mediumPriorityCount++;
+        } else {
+            insights.lowPriorityCount++;
+        }
+        insights.estimatedTotalTime += gap.estimated_processing_time || 2;
+    });
+
+    const totalGaps = gaps.length;
+    insights.bulkProcessingRecommended = totalGaps > 2;
+    if (totalGaps === 0) {
+        insights.processingStrategy = 'No processing needed';
+    } else if (totalGaps === 1) {
+        insights.processingStrategy = 'Single gap processing recommended';
+    } else if (totalGaps <= 3) {
+        insights.processingStrategy = 'Sequential processing or small batch';
+    } else {
+        insights.processingStrategy = 'Bulk processing recommended for efficiency';
+    }
+    return insights;
+}
+
+// =============================================================================
+// Enhanced Processing Function (unchanged)
+// =============================================================================
+
+async function processSelectedGaps() {
+    try {
+        const rag_url = Inputs.rag_url;
+        const user_id = Inputs.user_id || 'default_user';
+        const titleIds = Inputs.title_ids || [];
+        const processingMode = Inputs.processing_mode || 'auto';
+        const maxConcurrent = Inputs.max_concurrent || 2;
+
+        if (!rag_url) {
+            throw new Error('RAG URL is required');
+        }
+
+        if (!titleIds || titleIds.length === 0) {
+            throw new Error('No title IDs provided for processing');
+        }
+
+        console.log(`🚀 Processing ${titleIds.length} selected gaps...`);
+
+        const shouldUseBulk = (processingMode === 'bulk') ||
+            (processingMode === 'auto' && titleIds.length > 1);
+
+        if (shouldUseBulk && titleIds.length > 1) {
+            console.log(`🔄 Using bulk processing for ${titleIds.length} titles`);
+
+            const bulkResponse = await fetch(`${rag_url}/bulk_enhance_knowledge`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify({
+                    title_ids: titleIds,
+                    user_id: user_id,
+                    merge_with_existing: true,
+                    max_concurrent: maxConcurrent
+                })
+            });
+
+            if (!bulkResponse.ok) {
+                throw new Error(`Bulk processing failed! status: ${bulkResponse.status}`);
+            }
+
+            const result = await bulkResponse.json();
+
+            if (result.status === 'completed') {
+                console.log(`✅ Bulk processing completed: ${result.successful}/${result.total_titles} successful`);
+
+                Outputs.success();
+                Outputs.processingType = 'bulk';
+                Outputs.totalProcessed = result.total_titles;
+                Outputs.successful = result.successful;
+                Outputs.failed = result.failed;
+                Outputs.results = result.results;
+                Outputs.message = `Bulk processing completed: ${result.successful}/${result.total_titles} successful`;
+                Outputs.user_id = result.user_id || user_id;
+
+            } else {
+                throw new Error(result.error || 'Bulk processing failed');
+            }
+
+        } else {
+            // Sequential processing for single items or when bulk is not preferred
+            console.log(`🎯 Using sequential processing for ${titleIds.length} title(s)`);
+
+            const results = [];
+            let successful = 0;
+            let failed = 0;
+
+            for (const titleId of titleIds) {
+                try {
+                    console.log(`  Processing title: ${titleId}`);
+
+                    const response = await fetch(`${rag_url}/gap_filler/enhance_knowledge/${titleId}`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            user_id: user_id,
+                            merge_with_existing: true
+                        })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+
+                    const result = await response.json();
+
+                    if (result.status === 'success') {
+                        console.log(`  ✅ Successfully processed: ${titleId}`);
+                        successful++;
+                        results.push({
+                            title_id: titleId,
+                            status: 'success',
+                            documents_added: result.documents_added || 0,
+                            collection_name: result.collection_name
+                        });
+                    } else {
+                        console.log(`  ❌ Failed to process: ${titleId} - ${result.error}`);
+                        failed++;
+                        results.push({
+                            title_id: titleId,
+                            status: 'failed',
+                            error: result.error
+                        });
+                    }
+
+                    if (titleIds.length > 1) {
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
+
+                } catch (error) {
+                    console.error(`❌ Error processing title ${titleId}:`, error);
+                    failed++;
+                    results.push({
+                        title_id: titleId,
+                        status: 'error',
+                        error: error.message
+                    });
+                }
+            }
+
+            console.log(`✅ Sequential processing completed: ${successful}/${titleIds.length} successful`);
+
+            Outputs.success();
+            Outputs.processingType = 'sequential';
+            Outputs.totalProcessed = titleIds.length;
+            Outputs.successful = successful;
+            Outputs.failed = failed;
+            Outputs.results = results;
+            Outputs.message = `Sequential processing completed: ${successful}/${titleIds.length} successful`;
+            Outputs.user_id = user_id;
+        }
+
+        Outputs.completedAt = new Date().toISOString();
+
+    } catch (error) {
+        console.error('❌ Gap processing error:', error);
+        Outputs.success = false;
+        Outputs.error = error.message;
+        Outputs.message = `Processing failed: ${error.message}`;
+    }
+}
+
+// Run the function
+getOpenKnowledgeGaps();

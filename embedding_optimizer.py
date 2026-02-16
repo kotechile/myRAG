@@ -89,9 +89,40 @@ class CombinedOptimizer(BaseEstimator, TransformerMixin):
         X = np.array(X)
         logger.info(f"🔧 Fitting optimizer on {X.shape} data...")
         
+        # Data validation and cleaning
+        if X.size == 0:
+            raise ValueError("Cannot fit optimizer on empty data")
+        
+        # Check for NaN or infinite values
+        if np.any(np.isnan(X)) or np.any(np.isinf(X)):
+            logger.warning("⚠️ Found NaN or infinite values in data, cleaning...")
+            X = np.nan_to_num(X, nan=0.0, posinf=1e6, neginf=-1e6)
+        
+        # Check for constant features (zero variance)
+        if X.shape[1] > 1:
+            variances = np.var(X, axis=0)
+            constant_features = variances == 0
+            if np.any(constant_features):
+                logger.warning(f"⚠️ Found {np.sum(constant_features)} constant features, removing...")
+                X = X[:, ~constant_features]
+        
+        # Ensure we have enough samples for PCA
+        min_samples = min(self.target_dim + 1, X.shape[1])
+        if X.shape[0] < min_samples:
+            logger.warning(f"⚠️ Only {X.shape[0]} samples available, need at least {min_samples} for PCA")
+            # Duplicate samples to meet minimum requirement
+            while X.shape[0] < min_samples:
+                X = np.vstack([X, X[:min(X.shape[0], min_samples - X.shape[0])]])
+        
         # Fit PCA first
         logger.info(f"📐 Fitting PCA: {X.shape[1]} → {self.target_dim} dimensions")
-        X_pca = self.pca.fit_transform(X)
+        try:
+            X_pca = self.pca.fit_transform(X)
+        except Exception as e:
+            logger.error(f"❌ PCA fitting failed: {e}")
+            # Fallback: use identity transformation
+            logger.warning("⚠️ Using identity transformation as fallback")
+            X_pca = X[:, :self.target_dim] if X.shape[1] >= self.target_dim else X
         
         # Then fit quantizer
         logger.info(f"🔢 Fitting quantizer: {self.quantization}")
@@ -108,13 +139,28 @@ class CombinedOptimizer(BaseEstimator, TransformerMixin):
             
         X = np.array(X)
         
-        # Apply PCA
-        X_pca = self.pca.transform(X)
+        # Data validation and cleaning
+        if X.size == 0:
+            return X
         
-        # Apply quantization
-        X_quantized = self.quantizer.transform(X_pca)
+        # Check for NaN or infinite values
+        if np.any(np.isnan(X)) or np.any(np.isinf(X)):
+            logger.warning("⚠️ Found NaN or infinite values in transform data, cleaning...")
+            X = np.nan_to_num(X, nan=0.0, posinf=1e6, neginf=-1e6)
         
-        return X_quantized
+        try:
+            # Apply PCA
+            X_pca = self.pca.transform(X)
+            
+            # Apply quantization
+            X_quantized = self.quantizer.transform(X_pca)
+            
+            return X_quantized
+        except Exception as e:
+            logger.error(f"❌ Transform failed: {e}")
+            # Fallback: return original data truncated to target dimension
+            logger.warning("⚠️ Using fallback transformation")
+            return X[:, :self.target_dim] if X.shape[1] >= self.target_dim else X
     
     def inverse_transform(self, X_optimized: np.ndarray) -> np.ndarray:
         """Reverse the optimization (approximate)."""

@@ -12,8 +12,8 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Expose port for Coolify detection
-EXPOSE 8080
+# Expose port 80 for standard web traffic
+EXPOSE 80
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -40,7 +40,7 @@ RUN chown -R appuser:appgroup /app
 # Switch to non-root user
 USER appuser
 
-# Run the application with Gunicorn
+# Run the application with Gunicorn on port 80
 # Using create_app() factory pattern
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--threads", "4", "--timeout", "120", "main:create_app()"]
+CMD ["gunicorn", "--bind", "0.0.0.0:80", "--workers", "2", "--threads", "4", "--timeout", "120", "main:create_app()"]
 

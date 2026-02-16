@@ -201,7 +201,15 @@ class OptimizedDocumentChunker:
             return chunks
     
     def _manual_chunk(self, text: str, docid: str) -> List[TextNode]:
-        """Last-resort manual paragraph-based chunking."""
+        """Enhanced manual chunking that preserves full article content."""
+        
+        # Check if this is gap_filler content (has specific markers)
+        is_gap_filler = "Full Article Content" in text and "Knowledge Gap Filler System" in text
+        
+        if is_gap_filler:
+            return self._chunk_gap_filler_content(text, docid)
+        
+        # Original chunking for regular content
         paragraphs = re.split(r'\n\s*\n', text)
         
         chunks = []
@@ -246,6 +254,63 @@ class OptimizedDocumentChunker:
                 metadata={'chunk_type': 'manual', 'source': f'doc_{docid}'}
             ))
             
+        return chunks
+    
+    def _chunk_gap_filler_content(self, text: str, docid: str) -> List[TextNode]:
+        """Specialized chunking for gap filler content to preserve article integrity."""
+        
+        chunks = []
+        
+        # Split by major sections
+        sections = re.split(r'\n## ', text)
+        
+        # Process each section
+        for i, section in enumerate(sections):
+            if not section.strip():
+                continue
+                
+            # Add back the ## if it was removed by split
+            if i > 0:
+                section = "## " + section
+            
+            # For "Full Article Content" section, keep it as one large chunk
+            if "Full Article Content" in section:
+                chunks.append(TextNode(
+                    text=section.strip(),
+                    id_=f"doc_{docid}_chunk_{len(chunks)}",
+                    metadata={
+                        'chunk_type': 'gap_filler_article', 
+                        'source': f'doc_{docid}',
+                        'content_type': 'full_article'
+                    }
+                ))
+            else:
+                # For other sections, chunk normally but with larger size
+                if len(section) > 3000:
+                    # Split large sections into ~2500 char chunks
+                    for j in range(0, len(section), 2500):
+                        chunk_text = section[j:j+2500]
+                        chunks.append(TextNode(
+                            text=chunk_text,
+                            id_=f"doc_{docid}_chunk_{len(chunks)}",
+                            metadata={
+                                'chunk_type': 'gap_filler_section', 
+                                'source': f'doc_{docid}',
+                                'content_type': 'metadata'
+                            }
+                        ))
+                else:
+                    chunks.append(TextNode(
+                        text=section.strip(),
+                        id_=f"doc_{docid}_chunk_{len(chunks)}",
+                        metadata={
+                            'chunk_type': 'gap_filler_section', 
+                            'source': f'doc_{docid}',
+                            'content_type': 'metadata'
+                        }
+                    ))
+        
+        logger.info(f"Gap filler chunking created {len(chunks)} chunks for doc {docid}")
         return chunks
     
     def batch_process(self, nodes: List[TextNode], docid: str) -> List[TextNode]:

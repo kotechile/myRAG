@@ -46,109 +46,207 @@ class GapClosureWorkflow:
         
         logger.info(f"🔍 Found {len(gaps)} titles with open knowledge gaps")
         
-        # Step 2: Process each gap
+        # Step 2: Process gaps efficiently using batch consolidation
         results = {
             "gaps_found": len(gaps),
             "titles_processed": 0,
             "successful_closures": 0,
             "failed_closures": 0,
-            "details": []
+            "details": [],
+            "batch_processing": False,
+            "api_calls_saved": 0
         }
         
-        for i, gap in enumerate(gaps, 1):
-            logger.info(f"📋 Processing {i}/{len(gaps)}: {gap.focus_keyword} (ID: {gap.title_id})")
+        # Use batch processing for multiple gaps (consolidates API calls)
+        if len(gaps) > 1 and not dry_run:
+            logger.info(f"🤖 Using batch processing with LLM consolidation for {len(gaps)} gaps")
+            logger.info(f"   This will reduce API calls by grouping related gaps")
             
             try:
-                if dry_run:
-                    logger.info(f"   🧪 DRY RUN: Would process title {gap.title_id}")
-                    results["details"].append({
-                        "title_id": gap.title_id,
-                        "focus_keyword": gap.focus_keyword,
-                        "status": "dry_run_skipped",
-                        "data_types_needed": gap.data_types_needed
-                    })
-                    continue
-                
-                # Step 2a: Research the gap
-                logger.info(f"   🔍 Researching knowledge gap...")
-                research_results = await self.orchestrator.researcher.research_knowledge_gap(gap)
-                
-                # Check if Manus-wide research is needed due to insufficient results
-                if research_results.get('manus_suggestion_needed', False):
-                    logger.warning(f"   ⚠️ Insufficient research results for {gap.focus_keyword} (Quality Score: {research_results.get('research_quality_score', 0)}/100)")
-                    
-                    # Generate Manus-wide research suggestion
-                    if hasattr(self.orchestrator, 'suggestions_generator') and self.orchestrator.suggestions_generator:
-                        try:
-                            manus_suggestions = await self.orchestrator.suggestions_generator.suggest_manus_wide_research(gap, research_results)
-                            if manus_suggestions:
-                                # Save suggestion to database
-                                await self.orchestrator.suggestions_generator.save_suggestions_to_database(
-                                    title_id=gap.title_id,
-                                    suggestions=manus_suggestions,
-                                    research_context={
-                                        'focus_keyword': gap.focus_keyword,
-                                        'research_quality_score': research_results.get('research_quality_score', 0),
-                                        'total_sources': research_results.get('total_sources', 0),
-                                        'research_summary': research_results.get('research_summary', '')
-                                    },
-                                    user_id=None
-                                )
-                                logger.info(f"   💡 Generated Manus-wide research suggestion for low-quality results")
-                        except Exception as e:
-                            logger.error(f"   ❌ Error generating Manus suggestion: {e}")
-                
-                if research_results['total_sources'] == 0:
-                    logger.warning(f"   ⚠️ No sources found for {gap.focus_keyword}")
-                    results["details"].append({
-                        "title_id": gap.title_id,
-                        "focus_keyword": gap.focus_keyword,
-                        "status": "no_sources_found",
-                        "error": "No relevant sources found during research"
-                    })
-                    results["failed_closures"] += 1
-                    continue
-                
-                logger.info(f"   📚 Found {research_results['total_sources']} sources")
-                
-                # Step 2b: Enhance RAG with collection control
-                collection_name = None
-                if collection_strategy != "auto_detect":
-                    collection_name = collection_strategy
-                
-                logger.info(f"   🔗 Adding to RAG system...")
-                enhancement_result = await self.orchestrator.rag_enhancer.enhance_rag_for_title(
-                    title_id=gap.title_id,
-                    research_results=research_results,
-                    collection_name=collection_name,
-                    merge_with_existing=merge_with_existing
+                # Batch research all gaps at once
+                batch_results = await self.orchestrator.researcher.research_gaps_batch(
+                    gaps=gaps,
+                    user_id=None,
+                    use_consolidation=True
                 )
                 
-                if enhancement_result['success']:
-                    logger.info(f"   ✅ Successfully closed gaps for {gap.focus_keyword}")
-                    logger.info(f"      📊 Added {enhancement_result['documents_added']} documents")
-                    logger.info(f"      🗂️ Collection: {enhancement_result['collection_name']}")
-                    
-                    results["successful_closures"] += 1
-                    results["details"].append({
-                        "title_id": gap.title_id,
-                        "focus_keyword": gap.focus_keyword,
-                        "status": "successfully_closed",
-                        "documents_added": enhancement_result['documents_added'],
-                        "collection_name": enhancement_result['collection_name'],
-                        "sources_researched": research_results['total_sources']
-                    })
-                else:
-                    logger.error(f"   ❌ Failed to enhance RAG: {enhancement_result.get('error')}")
-                    results["failed_closures"] += 1
-                    results["details"].append({
-                        "title_id": gap.title_id,
-                        "focus_keyword": gap.focus_keyword,
-                        "status": "enhancement_failed",
-                        "error": enhancement_result.get('error')
-                    })
+                results["batch_processing"] = True
+                logger.info(f"✅ Batch research complete, processing results for each gap...")
                 
-                results["titles_processed"] += 1
+                # Process each gap's research results
+                for i, gap in enumerate(gaps, 1):
+                    logger.info(f"📋 Processing {i}/{len(gaps)}: {gap.focus_keyword} (ID: {gap.title_id})")
+                    
+                    research_results = batch_results.get(gap.title_id)
+                    if not research_results:
+                        logger.warning(f"   ⚠️ No research results for {gap.focus_keyword}")
+                        results["failed_closures"] += 1
+                        results["details"].append({
+                            "title_id": gap.title_id,
+                            "focus_keyword": gap.focus_keyword,
+                            "status": "no_research_results",
+                            "error": "No results from batch processing"
+                        })
+                        continue
+                    
+                    # Continue with existing processing logic...
+                    if research_results['total_sources'] == 0:
+                        logger.warning(f"   ⚠️ No sources found for {gap.focus_keyword}")
+                        results["details"].append({
+                            "title_id": gap.title_id,
+                            "focus_keyword": gap.focus_keyword,
+                            "status": "no_sources_found",
+                            "error": "No relevant sources found during research"
+                        })
+                        results["failed_closures"] += 1
+                        continue
+                    
+                    logger.info(f"   📚 Found {research_results['total_sources']} sources")
+                    
+                    # Step 2b: Enhance RAG with collection control
+                    collection_name = None
+                    if collection_strategy != "auto_detect":
+                        collection_name = collection_strategy
+                    
+                    logger.info(f"   🔗 Adding to RAG system...")
+                    enhancement_result = await self.orchestrator.rag_enhancer.enhance_rag_for_title(
+                        title_id=gap.title_id,
+                        research_results=research_results,
+                        collection_name=collection_name,
+                        merge_with_existing=merge_with_existing
+                    )
+                    
+                    if enhancement_result['success']:
+                        logger.info(f"   ✅ Successfully closed gaps for {gap.focus_keyword}")
+                        logger.info(f"      📊 Added {enhancement_result['documents_added']} documents")
+                        logger.info(f"      🗂️ Collection: {enhancement_result['collection_name']}")
+                        
+                        results["successful_closures"] += 1
+                        results["details"].append({
+                            "title_id": gap.title_id,
+                            "focus_keyword": gap.focus_keyword,
+                            "status": "successfully_closed",
+                            "documents_added": enhancement_result['documents_added'],
+                            "collection_name": enhancement_result['collection_name'],
+                            "sources_researched": research_results['total_sources']
+                        })
+                    else:
+                        logger.error(f"   ❌ Failed to enhance RAG: {enhancement_result.get('error')}")
+                        results["failed_closures"] += 1
+                        results["details"].append({
+                            "title_id": gap.title_id,
+                            "focus_keyword": gap.focus_keyword,
+                            "status": "enhancement_failed",
+                            "error": enhancement_result.get('error')
+                        })
+                    
+                    results["titles_processed"] += 1
+                    
+            except Exception as e:
+                logger.error(f"❌ Batch processing failed: {e}")
+                import traceback
+                logger.error(f"   Traceback: {traceback.format_exc()}")
+                logger.info("   🔄 Falling back to individual gap processing")
+                results["batch_processing"] = False
+                # Fall through to individual processing
+        
+        # Individual processing (fallback or when batch fails)
+        if not results["batch_processing"]:
+            logger.info(f"📋 Processing {len(gaps)} gap(s) individually")
+            for i, gap in enumerate(gaps, 1):
+                logger.info(f"📋 Processing {i}/{len(gaps)}: {gap.focus_keyword} (ID: {gap.title_id})")
+                
+                try:
+                    if dry_run:
+                        logger.info(f"   🧪 DRY RUN: Would process title {gap.title_id}")
+                        results["details"].append({
+                            "title_id": gap.title_id,
+                            "focus_keyword": gap.focus_keyword,
+                            "status": "dry_run_skipped",
+                            "data_types_needed": gap.data_types_needed
+                        })
+                        continue
+                    
+                    # Step 2a: Research the gap
+                    logger.info(f"   🔍 Researching knowledge gap...")
+                    research_results = await self.orchestrator.researcher.research_knowledge_gap(gap)
+                    
+                    # Check if Manus-wide research is needed due to insufficient results
+                    if research_results.get('manus_suggestion_needed', False):
+                        logger.warning(f"   ⚠️ Insufficient research results for {gap.focus_keyword} (Quality Score: {research_results.get('research_quality_score', 0)}/100)")
+                        
+                        # Generate Manus-wide research suggestion
+                        if hasattr(self.orchestrator, 'suggestions_generator') and self.orchestrator.suggestions_generator:
+                            try:
+                                manus_suggestions = await self.orchestrator.suggestions_generator.suggest_manus_wide_research(gap, research_results)
+                                if manus_suggestions:
+                                    # Save suggestion to database
+                                    await self.orchestrator.suggestions_generator.save_suggestions_to_database(
+                                        title_id=gap.title_id,
+                                        suggestions=manus_suggestions,
+                                        research_context={
+                                            'focus_keyword': gap.focus_keyword,
+                                            'research_quality_score': research_results.get('research_quality_score', 0),
+                                            'total_sources': research_results.get('total_sources', 0),
+                                            'research_summary': research_results.get('research_summary', '')
+                                        },
+                                        user_id=None
+                                    )
+                                    logger.info(f"   💡 Generated Manus-wide research suggestion for low-quality results")
+                            except Exception as e:
+                                logger.error(f"   ❌ Error generating Manus suggestion: {e}")
+                    
+                    if research_results['total_sources'] == 0:
+                        logger.warning(f"   ⚠️ No sources found for {gap.focus_keyword}")
+                        results["details"].append({
+                            "title_id": gap.title_id,
+                            "focus_keyword": gap.focus_keyword,
+                            "status": "no_sources_found",
+                            "error": "No relevant sources found during research"
+                        })
+                        results["failed_closures"] += 1
+                        continue
+                    
+                    logger.info(f"   📚 Found {research_results['total_sources']} sources")
+                    
+                    # Step 2b: Enhance RAG with collection control
+                    collection_name = None
+                    if collection_strategy != "auto_detect":
+                        collection_name = collection_strategy
+                    
+                    logger.info(f"   🔗 Adding to RAG system...")
+                    enhancement_result = await self.orchestrator.rag_enhancer.enhance_rag_for_title(
+                        title_id=gap.title_id,
+                        research_results=research_results,
+                        collection_name=collection_name,
+                        merge_with_existing=merge_with_existing
+                    )
+                    
+                    if enhancement_result['success']:
+                        logger.info(f"   ✅ Successfully closed gaps for {gap.focus_keyword}")
+                        logger.info(f"      📊 Added {enhancement_result['documents_added']} documents")
+                        logger.info(f"      🗂️ Collection: {enhancement_result['collection_name']}")
+                        
+                        results["successful_closures"] += 1
+                        results["details"].append({
+                            "title_id": gap.title_id,
+                            "focus_keyword": gap.focus_keyword,
+                            "status": "successfully_closed",
+                            "documents_added": enhancement_result['documents_added'],
+                            "collection_name": enhancement_result['collection_name'],
+                            "sources_researched": research_results['total_sources']
+                        })
+                    else:
+                        logger.error(f"   ❌ Failed to enhance RAG: {enhancement_result.get('error')}")
+                        results["failed_closures"] += 1
+                        results["details"].append({
+                            "title_id": gap.title_id,
+                            "focus_keyword": gap.focus_keyword,
+                            "status": "enhancement_failed",
+                            "error": enhancement_result.get('error')
+                        })
+                    
+                    results["titles_processed"] += 1
                 
             except Exception as e:
                 logger.error(f"   ❌ Error processing {gap.title_id}: {e}")

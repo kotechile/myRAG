@@ -1,0 +1,539 @@
+// =============================================================================
+// ✅ Close Knowledge Gaps Function
+// =============================================================================
+
+const supabase = await Noodl.Variables.supabase;
+const userData = await Noodl.Variables.supabase.auth.getUser();
+
+async function closeKnowledgeGaps() {
+    try {
+        const rag_url = Inputs.rag_url;
+        const user_id = userData.data.user.id;
+        
+        // Get title IDs from input (can be from previous enhancement summary)
+        const titleIds = Inputs.title_ids;
+        const closureMethod = Inputs.closure_method || 'manual_review_completed';
+        const closureNotes = Inputs.closure_notes || 'Knowledge gaps reviewed and marked as complete after enhancement verification';
+        
+        if (!titleIds || !Array.isArray(titleIds) || titleIds.length === 0) {
+            throw new Error('title_ids array is required and must not be empty');
+        }
+        
+        if (!rag_url) {
+            throw new Error('RAG URL is required');
+        }
+        
+        console.log(`🔒 Closing knowledge gaps for ${titleIds.length} titles...`);
+        console.log('📋 Title IDs to close:', titleIds);
+        
+        const results = [];
+        let successful = 0;
+        let failed = 0;
+        
+        // Process each title individually
+        for (let i = 0; i < titleIds.length; i++) {
+            const titleId = titleIds[i];
+            
+            try {
+                console.log(`  Processing ${i + 1}/${titleIds.length}: ${titleId}`);
+                
+                const response = await fetch(`${rag_url}/mark_gaps_closed/${titleId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        user_id: user_id,
+                        closure_method: closureMethod,
+                        closure_notes: closureNotes
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const result = await response.json();
+                console.log(`    Response:`, result);
+                
+                if (result.status === 'success') {
+                    console.log(`  ✅ Successfully closed gaps for: ${titleId}`);
+                    successful++;
+                    results.push({
+                        title_id: titleId,
+                        status: 'success',
+                        closure_timestamp: result.closure_timestamp,
+                        message: `Gaps closed successfully`
+                    });
+                } else {
+                    console.log(`  ❌ Failed to close gaps for: ${titleId} - ${result.error}`);
+                    failed++;
+                    results.push({
+                        title_id: titleId,
+                        status: 'failed',
+                        error: result.error || 'Unknown error',
+                        message: `Failed: ${result.error || 'Unknown error'}`
+                    });
+                }
+                
+                // Small delay between requests to avoid overwhelming the server
+                if (i < titleIds.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+                
+            } catch (error) {
+                console.error(`  ❌ Error closing gaps for ${titleId}:`, error);
+                failed++;
+                results.push({
+                    title_id: titleId,
+                    status: 'error',
+                    error: error.message,
+                    message: `Error: ${error.message}`
+                });
+            }
+        }
+        
+        console.log(`✅ Gap closure process completed:`);
+        console.log(`   Total processed: ${titleIds.length}`);
+        console.log(`   Successful: ${successful}`);
+        console.log(`   Failed: ${failed}`);
+        
+        // Calculate success rate
+        const successRate = titleIds.length > 0 ? Math.round((successful / titleIds.length) * 100) : 0;
+        
+        // Output results
+        Outputs.success();
+        Outputs.user_id = user_id;
+        Outputs.processedAt = new Date().toISOString();
+        
+        // Processing summary
+        Outputs.totalProcessed = titleIds.length;
+        Outputs.successful = successful;
+        Outputs.failed = failed;
+        Outputs.successRate = successRate;
+        
+        // Detailed results
+        Outputs.results = results;
+        Outputs.successfulTitles = results.filter(r => r.status === 'success');
+        Outputs.failedTitles = results.filter(r => r.status === 'failed' || r.status === 'error');
+        
+        // Status messages
+        if (successful === titleIds.length) {
+            Outputs.message = `✅ All ${titleIds.length} knowledge gaps closed successfully`;
+            Outputs.detailedMessage = `Successfully closed knowledge gaps for all ${titleIds.length} titles. All gaps are now marked as complete.`;
+            Outputs.overallStatus = 'complete_success';
+        } else if (successful > 0) {
+            Outputs.message = `⚠️ Partial success: ${successful}/${titleIds.length} gaps closed`;
+            Outputs.detailedMessage = `Closed ${successful} out of ${titleIds.length} knowledge gaps. ${failed} titles had issues.`;
+            Outputs.overallStatus = 'partial_success';
+        } else {
+            Outputs.message = `❌ Failed to close any knowledge gaps`;
+            Outputs.detailedMessage = `None of the ${titleIds.length} knowledge gaps could be closed. Check error details.`;
+            Outputs.overallStatus = 'failed';
+        }
+        
+        // Next steps recommendations
+        if (failed > 0) {
+            Outputs.nextSteps = [
+                `Review ${failed} failed titles`,
+                'Check error messages in results',
+                'Retry failed titles individually'
+            ];
+        } else {
+            Outputs.nextSteps = [
+                'All knowledge gaps are now closed',
+                'Titles are ready for content creation',
+                'Enhanced RAG sources are available for queries'
+            ];
+        }
+        
+        // Actionable data for UI
+        Outputs.canRetryFailed = failed > 0;
+        Outputs.allGapsClosed = failed === 0;
+        Outputs.readyForContentCreation = successful === titleIds.length;
+        
+    } catch (error) {
+        console.error('❌ Gap closure error:', error);
+        
+        Outputs.success();
+        Outputs.error = error.message;
+        Outputs.user_id = user_id;
+        Outputs.overallStatus = 'error';
+        Outputs.message = `Connection error: ${error.message}`;
+        Outputs.detailedMessage = `Failed to connect to gap closure service: ${error.message}`;
+        
+        // Error defaults
+        Outputs.totalProcessed = 0;
+        Outputs.successful = 0;
+        Outputs.failed = (titleIds || []).length;
+        Outputs.results = [];
+        Outputs.nextSteps = ['Check connection to RAG server', 'Verify endpoint availability'];
+    }
+}
+
+// =============================================================================
+// ✅ Bulk Close All Open Gaps Function (Dynamic with Inputs)
+// =============================================================================
+
+async function bulkCloseAllOpenGaps() {
+    try {
+        const rag_url = Inputs.rag_url;
+        const user_id = userData.data.user.id;
+        
+        // ✅ Get title IDs from Inputs (dynamic)
+        const titleIds = Inputs.title_ids;
+        const collection_name = Inputs.collection_name || 'default_knowledge_enhanced';
+        const closure_method = Inputs.closure_method || 'bulk_manual_review';
+        const closure_notes = Inputs.closure_notes || 'Bulk closure of open knowledge gaps after enhancement verification. All titles enhanced with additional research sources.';
+        
+        if (!titleIds || !Array.isArray(titleIds) || titleIds.length === 0) {
+            throw new Error('title_ids input is required and must not be empty array');
+        }
+        
+        if (!rag_url) {
+            throw new Error('rag_url input is required');
+        }
+        
+        console.log(`🚀 Bulk closing ${titleIds.length} open knowledge gaps...`);
+        console.log('📋 Title IDs:', titleIds);
+        console.log('🗂️ Collection:', collection_name);
+        
+        // ✅ First, ensure all titles are enhanced and assigned to the collection
+        console.log('🔧 Step 1: Ensuring all titles are properly enhanced...');
+        
+        const enhancementResults = [];
+        let enhancementSuccessful = 0;
+        let enhancementFailed = 0;
+        
+        for (let i = 0; i < titleIds.length; i++) {
+            const titleId = titleIds[i];
+            
+            try {
+                console.log(`  Enhancing ${i + 1}/${titleIds.length}: ${titleId}`);
+                
+                const enhanceResponse = await fetch(`${rag_url}/gap_filler/enhance_knowledge/${titleId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        user_id: user_id,
+                        collection_name: collection_name,
+                        merge_with_existing: true
+                    })
+                });
+
+                if (!enhanceResponse.ok) {
+                    throw new Error(`Enhancement HTTP error! status: ${enhanceResponse.status}`);
+                }
+
+                const enhanceResult = await enhanceResponse.json();
+                
+                if (enhanceResult.status === 'success' || enhanceResult.status === 'no_gap') {
+                    console.log(`    ✅ Enhanced: ${titleId} -> Collection: ${enhanceResult.collection_name || collection_name}`);
+                    enhancementSuccessful++;
+                    enhancementResults.push({
+                        title_id: titleId,
+                        status: 'enhanced',
+                        collection_name: enhanceResult.collection_name || collection_name,
+                        documents_added: enhanceResult.documents_added || 0
+                    });
+                } else {
+                    console.log(`    ⚠️ Enhancement issue: ${titleId} - ${enhanceResult.error || 'Unknown error'}`);
+                    enhancementFailed++;
+                    enhancementResults.push({
+                        title_id: titleId,
+                        status: 'enhancement_issue',
+                        error: enhanceResult.error || 'Unknown error'
+                    });
+                }
+                
+                // Small delay between enhancement requests
+                if (i < titleIds.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+                
+            } catch (error) {
+                console.error(`    ❌ Enhancement error for ${titleId}:`, error);
+                enhancementFailed++;
+                enhancementResults.push({
+                    title_id: titleId,
+                    status: 'enhancement_error',
+                    error: error.message
+                });
+            }
+        }
+        
+        console.log(`✅ Enhancement phase completed: ${enhancementSuccessful}/${titleIds.length} successful`);
+        
+        // ✅ Step 2: Close knowledge gaps for all titles
+        console.log('🔒 Step 2: Closing knowledge gaps...');
+        
+        const closureResults = [];
+        let closureSuccessful = 0;
+        let closureFailed = 0;
+        
+        for (let i = 0; i < titleIds.length; i++) {
+            const titleId = titleIds[i];
+            
+            try {
+                console.log(`  Closing gaps ${i + 1}/${titleIds.length}: ${titleId}`);
+                
+                const closeResponse = await fetch(`${rag_url}/mark_gaps_closed/${titleId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        user_id: user_id,
+                        closure_method: closure_method,
+                        closure_notes: `${closure_notes} Collection: ${collection_name}`
+                    })
+                });
+
+                if (!closeResponse.ok) {
+                    throw new Error(`Closure HTTP error! status: ${closeResponse.status}`);
+                }
+
+                const closeResult = await closeResponse.json();
+                
+                if (closeResult.status === 'success') {
+                    console.log(`    ✅ Gaps closed: ${titleId}`);
+                    closureSuccessful++;
+                    closureResults.push({
+                        title_id: titleId,
+                        status: 'closed',
+                        closure_timestamp: closeResult.closure_timestamp
+                    });
+                } else {
+                    console.log(`    ❌ Closure failed: ${titleId} - ${closeResult.error}`);
+                    closureFailed++;
+                    closureResults.push({
+                        title_id: titleId,
+                        status: 'closure_failed',
+                        error: closeResult.error || 'Unknown error'
+                    });
+                }
+                
+                // Small delay between closure requests
+                if (i < titleIds.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+                
+            } catch (error) {
+                console.error(`    ❌ Closure error for ${titleId}:`, error);
+                closureFailed++;
+                closureResults.push({
+                    title_id: titleId,
+                    status: 'closure_error',
+                    error: error.message
+                });
+            }
+        }
+        
+        console.log(`✅ Closure phase completed: ${closureSuccessful}/${titleIds.length} successful`);
+        
+        // ✅ Calculate overall success
+        const overallSuccessful = closureSuccessful;
+        const overallFailed = titleIds.length - closureSuccessful;
+        const successRate = Math.round((overallSuccessful / titleIds.length) * 100);
+        
+        console.log(`🎯 Bulk closure process completed:`);
+        console.log(`   Total processed: ${titleIds.length}`);
+        console.log(`   Enhancement successful: ${enhancementSuccessful}`);
+        console.log(`   Gaps closed: ${closureSuccessful}`);
+        console.log(`   Overall success rate: ${successRate}%`);
+        
+        // ✅ Output comprehensive results
+        Outputs.success();
+        Outputs.user_id = user_id;
+        Outputs.collection_name = collection_name;
+        Outputs.processedAt = new Date().toISOString();
+        
+        // Processing summary
+        Outputs.totalProcessed = titleIds.length;
+        Outputs.enhancementSuccessful = enhancementSuccessful;
+        Outputs.enhancementFailed = enhancementFailed;
+        Outputs.closureSuccessful = closureSuccessful;
+        Outputs.closureFailed = closureFailed;
+        Outputs.overallSuccessRate = successRate;
+        
+        // Detailed results
+        Outputs.enhancementResults = enhancementResults;
+        Outputs.closureResults = closureResults;
+        Outputs.fullyCompletedTitles = closureResults.filter(r => r.status === 'closed');
+        Outputs.failedTitles = closureResults.filter(r => r.status !== 'closed');
+        
+        // Collection info
+        Outputs.collectionsUsed = [...new Set(enhancementResults
+            .filter(r => r.collection_name)
+            .map(r => r.collection_name)
+        )];
+        
+        Outputs.totalDocumentsAdded = enhancementResults
+            .reduce((sum, r) => sum + (r.documents_added || 0), 0);
+        
+        // Status messages
+        if (overallSuccessful === titleIds.length) {
+            Outputs.message = `✅ All ${titleIds.length} knowledge gaps closed successfully`;
+            Outputs.detailedMessage = `Successfully enhanced and closed knowledge gaps for all ${titleIds.length} titles in collection '${collection_name}'. Added ${Outputs.totalDocumentsAdded} total documents.`;
+            Outputs.overallStatus = 'complete_success';
+        } else if (overallSuccessful > 0) {
+            Outputs.message = `⚠️ Partial success: ${overallSuccessful}/${titleIds.length} gaps closed`;
+            Outputs.detailedMessage = `Closed ${overallSuccessful} out of ${titleIds.length} knowledge gaps. ${overallFailed} titles had issues. Collection: '${collection_name}'.`;
+            Outputs.overallStatus = 'partial_success';
+        } else {
+            Outputs.message = `❌ Failed to close any knowledge gaps`;
+            Outputs.detailedMessage = `None of the ${titleIds.length} knowledge gaps could be closed. Check enhancement and closure errors.`;
+            Outputs.overallStatus = 'failed';
+        }
+        
+        // Next steps
+        if (overallFailed > 0) {
+            Outputs.nextSteps = [
+                `Review ${overallFailed} failed titles`,
+                'Check enhancement and closure errors',
+                'Verify collection permissions',
+                'Retry failed titles individually'
+            ];
+        } else {
+            Outputs.nextSteps = [
+                'All knowledge gaps are now closed',
+                `Enhanced content available in '${collection_name}' collection`,
+                'Titles ready for RAG-enhanced content creation',
+                'Query the enhanced knowledge base for improved results'
+            ];
+        }
+        
+        // Actionable flags
+        Outputs.canRetryFailed = overallFailed > 0;
+        Outputs.allGapsClosed = overallFailed === 0;
+        Outputs.readyForRAGQueries = overallSuccessful > 0;
+        Outputs.enhancementComplete = enhancementSuccessful === titleIds.length;
+        
+    } catch (error) {
+        console.error('❌ Bulk closure error:', error);
+        
+        Outputs.success();
+        Outputs.error = error.message;
+        Outputs.user_id = user_id;
+        Outputs.overallStatus = 'error';
+        Outputs.message = `Bulk closure failed: ${error.message}`;
+        Outputs.detailedMessage = `Failed to execute bulk closure process: ${error.message}`;
+        
+        // Error defaults
+        Outputs.totalProcessed = 0;
+        Outputs.enhancementSuccessful = 0;
+        Outputs.closureSuccessful = 0;
+        Outputs.enhancementResults = [];
+        Outputs.closureResults = [];
+        Outputs.nextSteps = ['Check connection to RAG server', 'Verify inputs and permissions'];
+    }
+}
+
+// =============================================================================
+// ✅ Check Gap Closure Status Function
+// =============================================================================
+
+async function checkGapClosureStatus() {
+    try {
+        const rag_url = Inputs.rag_url;
+        const user_id = userData.data.user.id;
+        
+        console.log('📊 Checking gap closure status...');
+        
+        const response = await fetch(`${rag_url}/gap_closure_status?user_id=${encodeURIComponent(user_id)}`, {
+            method: 'GET',
+            headers: {
+                'Accept': 'application/json'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const result = await response.json();
+        console.log('📈 Gap closure status:', result);
+        
+        if (result.status === 'success') {
+            const statusData = result.statusData || result.gap_closure_status || {};
+            
+            Outputs.success();
+            Outputs.gapClosureStatus = statusData;
+            Outputs.totalTitles = statusData.total_titles || 0;
+            Outputs.gapsClosedCount = statusData.gaps_closed_count || 0;
+            Outputs.gapsOpenCount = statusData.gaps_open_count || 0;
+            Outputs.completionPercentage = statusData.completion_percentage || 0;
+            
+            Outputs.message = `Status check: ${statusData.gaps_closed_count || 0}/${statusData.total_titles || 0} gaps closed`;
+            Outputs.allGapsClosed = (statusData.gaps_open_count || 0) === 0;
+            
+        } else {
+            throw new Error(result.error || 'Status check failed');
+        }
+        
+    } catch (error) {
+        console.error('❌ Status check error:', error);
+        Outputs.success();
+        Outputs.error = error.message;
+        Outputs.message = `Status check failed: ${error.message}`;
+    }
+}
+
+// =============================================================================
+// ✅ Run the appropriate function based on your needs
+// =============================================================================
+
+// Get function type from input (defaults to 'bulk_close')
+const functionType = Inputs.function_type || 'bulk_close';
+
+// Validate required inputs
+if (!Inputs.rag_url) {
+    console.error('❌ Error: rag_url input is required');
+    Outputs.success();
+    Outputs.error = 'rag_url input is required';
+    Outputs.message = 'Missing required input: rag_url';
+} else {
+    // Run the selected function
+    switch(functionType) {
+        case 'close_specific':
+            // Close specific title IDs (requires Inputs.title_ids)
+            if (!Inputs.title_ids || !Array.isArray(Inputs.title_ids) || Inputs.title_ids.length === 0) {
+                console.error('❌ Error: title_ids input is required for close_specific function');
+                Outputs.success();
+                Outputs.error = 'title_ids input is required for close_specific function';
+                Outputs.message = 'Missing required input: title_ids';
+            } else {
+                closeKnowledgeGaps();
+            }
+            break;
+            
+        case 'bulk_close':
+            // Bulk close with full enhancement and collection assignment (RECOMMENDED)
+            if (!Inputs.title_ids || !Array.isArray(Inputs.title_ids) || Inputs.title_ids.length === 0) {
+                console.error('❌ Error: title_ids input is required for bulk_close function');
+                Outputs.success();
+                Outputs.error = 'title_ids input is required for bulk_close function';
+                Outputs.message = 'Missing required input: title_ids';
+            } else {
+                console.log("STARTED PROCESSING OPEN GAPS for function type:", functionType)
+                bulkCloseAllOpenGaps();
+            }
+            break;
+            
+        case 'check_status':
+            // Check gap closure status
+            checkGapClosureStatus();
+            break;
+            
+        default:
+            console.error(`❌ Error: Unknown function type '${functionType}'. Valid options: close_specific, bulk_close, check_status`);
+            Outputs.success();
+            Outputs.error = `Unknown function type '${functionType}'`;
+            Outputs.message = `Invalid function type. Use: close_specific, bulk_close, or check_status`;
+    }
+}

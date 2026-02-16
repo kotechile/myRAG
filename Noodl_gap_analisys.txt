@@ -1,0 +1,518 @@
+// =============================================================================
+// ✅ UPDATED: Noodl JavaScript Functions for Knowledge Gap Filler API Integration
+// Available in your Noodl function node with inputs: collection_name, rag_url
+// =============================================================================
+
+// =============================================================================
+// 1. ✅ ENHANCED: ANALYZE KNOWLEDGE GAPS (All gaps - No Processing)
+// =============================================================================
+
+async function analyzeKnowledgeGaps() {
+    try {
+        // Get inputs
+        const collection_name = Inputs.collection_name;
+        const rag_url = Inputs.rag_url;
+        
+        // ✅ ENHANCED: Get user ID with better error handling
+        let userID = 'default_user';
+        try {
+            const supabase = await Noodl.Variables.supabase;
+            const userData = await supabase.auth.getUser();
+            if (userData?.data?.user?.id) {
+                userID = userData.data.user.id;
+                console.log(`👤 Using user ID: ${userID}`);
+            } else {
+                console.log('⚠️ No user found, using default_user');
+            }
+        } catch (authError) {
+            console.log('⚠️ Auth error, using default_user:', authError.message);
+        }
+
+        console.log('🔍 Analyzing knowledge gaps...');
+
+        // ✅ UPDATED: Add user_id parameter to URL
+        const url = `${rag_url}/gap_filler/analyze_knowledge_gaps?user_id=${encodeURIComponent(userID)}`;
+
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+                // Auth header if your API requires it:
+                // 'Authorization': `Bearer ${userData?.data?.session?.access_token}`
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const result = await response.json();
+
+        if (result.status === 'success') {
+            console.log(`✅ Found ${result.gaps_found} knowledge gaps`);
+            console.log('📊 Gap analysis:', result.knowledge_gaps);
+
+            // ✅ ENHANCED: Process gaps for better insights
+            const processedGaps = (result.knowledge_gaps || []).map((gap, index) => ({
+                ...gap,
+                rank: index + 1,
+                priority_label: gap.priority_score >= 0.8 ? 'High' : 
+                               gap.priority_score >= 0.5 ? 'Medium' : 'Low',
+                estimated_sources: gap.data_types_needed?.length * 3 || 0,
+                processing_recommendation: gap.priority_score >= 0.8 ? 'Process immediately' :
+                                         gap.priority_score >= 0.5 ? 'Process soon' : 'Process when convenient'
+            }));
+
+            // ✅ NEW: Calculate insights
+            const insights = {
+                highPriorityCount: processedGaps.filter(g => g.priority_score >= 0.8).length,
+                mediumPriorityCount: processedGaps.filter(g => g.priority_score >= 0.5 && g.priority_score < 0.8).length,
+                lowPriorityCount: processedGaps.filter(g => g.priority_score < 0.5).length,
+                totalEstimatedSources: processedGaps.reduce((sum, g) => sum + g.estimated_sources, 0),
+                bulkProcessingRecommended: result.gaps_found > 2,
+                canBulkProcess: result.gaps_found > 1
+            };
+
+            // Output results to Noodl (enhanced)
+            Outputs.success = true;
+            Outputs.analysisResult = result;
+            Outputs.gapsFound = result.gaps_found;
+            Outputs.knowledgeGaps = processedGaps; // ✅ Enhanced with insights
+            Outputs.originalGaps = result.knowledge_gaps; // ✅ Keep original for compatibility
+            Outputs.estimatedDocuments = result.integration_info?.estimated_total_documents || insights.totalEstimatedSources;
+            Outputs.userID = result.user_id || userID; // ✅ NEW: User context
+            Outputs.analysisTimestamp = result.analysis_timestamp;
+            
+            // ✅ NEW: Enhanced insights
+            Outputs.insights = insights;
+            Outputs.highPriorityCount = insights.highPriorityCount;
+            Outputs.mediumPriorityCount = insights.mediumPriorityCount;
+            Outputs.lowPriorityCount = insights.lowPriorityCount;
+            Outputs.bulkProcessingRecommended = insights.bulkProcessingRecommended;
+            Outputs.canBulkProcess = insights.canBulkProcess;
+            
+            // ✅ NEW: Action recommendations
+            if (result.gaps_found === 0) {
+                Outputs.message = 'No knowledge gaps found - all titles appear complete';
+                Outputs.recommendedAction = 'none';
+            } else if (result.gaps_found === 1) {
+                Outputs.message = `Found 1 knowledge gap to enhance (${processedGaps[0]?.priority_label} priority)`;
+                Outputs.recommendedAction = 'single_process';
+            } else {
+                const priorityText = insights.highPriorityCount > 0 
+                    ? `${insights.highPriorityCount} high priority` 
+                    : insights.mediumPriorityCount > 0 
+                    ? `${insights.mediumPriorityCount} medium priority`
+                    : 'low priority';
+                Outputs.message = `Found ${result.gaps_found} knowledge gaps to enhance (${priorityText})`;
+                Outputs.recommendedAction = insights.bulkProcessingRecommended ? 'bulk_process' : 'sequential_process';
+            }
+
+            // ✅ NEW: Processing arrays for easy integration
+            Outputs.titleIds = processedGaps.map(gap => gap.title_id).filter(id => id);
+            Outputs.highPriorityTitleIds = processedGaps.filter(g => g.priority_score >= 0.8).map(g => g.title_id);
+            Outputs.readyForProcessing = result.gaps_found > 0;
+
+        } else {
+            throw new Error(result.error || 'Analysis failed');
+        }
+
+    } catch (error) {
+        console.error('❌ Knowledge gap analysis error:', error);
+        Outputs.success = false;
+        Outputs.error = error.message;
+        Outputs.gapsFound = 0;
+        Outputs.knowledgeGaps = [];
+        Outputs.titleIds = [];
+        Outputs.readyForProcessing = false;
+        Outputs.recommendedAction = 'check_system';
+        Outputs.message = `Analysis failed: ${error.message}`;
+    }
+}
+
+// =============================================================================
+// 2. ✅ NEW: ANALYZE ONLY OPEN GAPS (More efficient for status checking)
+// =============================================================================
+
+async function analyzeOpenGapsOnly() {
+    try {
+        const rag_url = Inputs.rag_url;
+        
+        // Get user ID with error handling
+        let userID = 'default_user';
+        try {
+            const supabase = await Noodl.Variables.supabase;
+            const userData = await supabase.auth.getUser();
+            if (userData?.data?.user?.id) {
+                userID = userData.data.user.id;
+            }
+        } catch (authError) {
+            console.log('⚠️ Auth error, using default_user');
+        }
+
+        console.log('🔍 Analyzing open knowledge gaps only...');
+
+        const url = `${rag_url}/analyze_knowledge_gaps_open_only?user_id=${encodeURIComponent(userID)}`;
+
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const result = await response.json();
+
+        if (result.status === 'success') {
+            const gapsFound = result.gaps_found || 0;
+            console.log(`✅ Found ${gapsFound} open knowledge gaps`);
+
+            // Process gaps with enhanced data
+            const processedGaps = (result.knowledge_gaps || []).map((gap, index) => ({
+                ...gap,
+                rank: index + 1,
+                priority_label: gap.priority_score >= 0.8 ? 'High' : 
+                               gap.priority_score >= 0.5 ? 'Medium' : 'Low',
+                estimated_sources: gap.data_types_needed?.length * 3 || 0,
+                urgency: gap.priority_score >= 0.8 ? 'urgent' : 
+                        gap.priority_score >= 0.5 ? 'normal' : 'low'
+            }));
+
+            // Calculate insights
+            const insights = {
+                hasOpenGaps: gapsFound > 0,
+                urgentCount: processedGaps.filter(g => g.urgency === 'urgent').length,
+                normalCount: processedGaps.filter(g => g.urgency === 'normal').length,
+                lowCount: processedGaps.filter(g => g.urgency === 'low').length,
+                shouldProcessImmediately: processedGaps.some(g => g.urgency === 'urgent'),
+                bulkRecommended: gapsFound > 2
+            };
+
+            // Output results
+            Outputs.success = true;
+            Outputs.gapsFound = gapsFound;
+            Outputs.openGaps = processedGaps;
+            Outputs.hasOpenGaps = insights.hasOpenGaps;
+            Outputs.insights = insights;
+            Outputs.userID = result.user_id || userID;
+            Outputs.analysisTimestamp = result.analysis_timestamp;
+            
+            // Action outputs
+            Outputs.titleIds = processedGaps.map(gap => gap.title_id).filter(id => id);
+            Outputs.urgentTitleIds = processedGaps.filter(g => g.urgency === 'urgent').map(g => g.title_id);
+            Outputs.shouldProcessNow = insights.shouldProcessImmediately;
+            Outputs.bulkRecommended = insights.bulkRecommended;
+            
+            if (gapsFound === 0) {
+                Outputs.message = 'No open knowledge gaps found - all gaps are closed!';
+                Outputs.statusIcon = '✅';
+                Outputs.statusColor = 'green';
+            } else {
+                const urgencyText = insights.urgentCount > 0 ? ` (${insights.urgentCount} urgent)` : '';
+                Outputs.message = `${gapsFound} open knowledge gaps found${urgencyText}`;
+                Outputs.statusIcon = insights.urgentCount > 0 ? '🚨' : '⚠️';
+                Outputs.statusColor = insights.urgentCount > 0 ? 'red' : 'orange';
+            }
+
+        } else {
+            throw new Error(result.error || 'Open gaps analysis failed');
+        }
+
+    } catch (error) {
+        console.error('❌ Open gaps analysis error:', error);
+        Outputs.success = false;
+        Outputs.error = error.message;
+        Outputs.gapsFound = 0;
+        Outputs.hasOpenGaps = false;
+        Outputs.message = `Analysis failed: ${error.message}`;
+        Outputs.statusIcon = '❌';
+        Outputs.statusColor = 'red';
+    }
+}
+
+// =============================================================================
+// 3. ✅ NEW: SINGLE TITLE ENHANCEMENT
+// =============================================================================
+
+async function enhanceSingleTitle() {
+    try {
+        const rag_url = Inputs.rag_url;
+        const title_id = Inputs.title_ids && Inputs.title_ids.length > 0 ? Inputs.title_ids[0] : null;
+        const collection_name = Inputs.collection_name; // Optional
+        const merge_with_existing = Inputs.merge_with_existing !== false; // Default true
+        
+        if (!title_id) {
+            throw new Error('title_ids input is required and must contain at least one title ID');
+        }
+
+        // Get user ID
+        let userID = 'default_user';
+        try {
+            const supabase = await Noodl.Variables.supabase;
+            const userData = await supabase.auth.getUser();
+            if (userData?.data?.user?.id) {
+                userID = userData.data.user.id;
+            }
+        } catch (authError) {
+            console.log('⚠️ Auth error, using default_user');
+        }
+
+        console.log(`🚀 Enhancing knowledge for title: ${title_id}`);
+
+        const response = await fetch(`${rag_url}/gap_filler/enhance_knowledge/${title_id}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify({
+                user_id: userID,
+                collection_name: collection_name,
+                merge_with_existing: merge_with_existing
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const result = await response.json();
+
+        if (result.status === 'success') {
+            console.log(`✅ Successfully enhanced title ${title_id}`);
+            console.log(`📊 Added ${result.documents_added} documents to collection: ${result.collection_name}`);
+
+            Outputs.success = true;
+            Outputs.result = result;
+            Outputs.title_id = title_id;
+            Outputs.documentsAdded = result.documents_added || 0;
+            Outputs.collectionName = result.collection_name;
+            Outputs.sourcesFound = result.sources_found || 0;
+            Outputs.userID = result.user_id || userID;
+            Outputs.message = `Successfully enhanced title with ${result.documents_added} new knowledge sources`;
+            
+            // Collection info
+            if (result.collection_info) {
+                Outputs.collectionInfo = result.collection_info;
+                Outputs.collectionStrategy = result.collection_info.collection_strategy;
+            }
+
+        } else {
+            throw new Error(result.error || 'Enhancement failed');
+        }
+
+    } catch (error) {
+        console.error('❌ Title enhancement error:', error);
+        Outputs.success = false;
+        Outputs.error = error.message;
+        Outputs.message = `Enhancement failed: ${error.message}`;
+    }
+}
+
+// =============================================================================
+// 4. ✅ NEW: BULK TITLE ENHANCEMENT
+// =============================================================================
+
+async function enhanceBulkTitles() {
+    try {
+        const rag_url = Inputs.rag_url;
+        const title_ids = Inputs.title_ids || []; // Array of title IDs
+        const collection_name = Inputs.collection_name; // Optional
+        const merge_with_existing = Inputs.merge_with_existing !== false; // Default true
+        const max_concurrent = Inputs.max_concurrent || 2; // Concurrent processing limit
+        
+        if (!Array.isArray(title_ids) || title_ids.length === 0) {
+            throw new Error('Title IDs array is required and must not be empty');
+        }
+
+        // Get user ID
+        let userID = 'default_user';
+        try {
+            const supabase = await Noodl.Variables.supabase;
+            const userData = await supabase.auth.getUser();
+            if (userData?.data?.user?.id) {
+                userID = userData.data.user.id;
+            }
+        } catch (authError) {
+            console.log('⚠️ Auth error, using default_user');
+        }
+
+        console.log(`🚀 Bulk enhancing ${title_ids.length} titles...`);
+
+        const response = await fetch(`${rag_url}/bulk_enhance_knowledge`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
+            body: JSON.stringify({
+                title_ids: title_ids,
+                user_id: userID,
+                collection_name: collection_name,
+                merge_with_existing: merge_with_existing,
+                max_concurrent: max_concurrent
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const result = await response.json();
+
+        if (result.status === 'completed') {
+            console.log(`✅ Bulk processing completed: ${result.successful}/${result.total_titles} successful`);
+
+            Outputs.success = true;
+            Outputs.result = result;
+            Outputs.totalTitles = result.total_titles;
+            Outputs.successful = result.successful;
+            Outputs.failed = result.failed;
+            Outputs.results = result.results; // Detailed results per title
+            Outputs.userID = result.user_id || userID;
+            Outputs.processingTimestamp = result.bulk_processing_timestamp;
+            
+            // Calculate summary stats
+            const totalDocuments = result.results.reduce((sum, r) => {
+                return sum + (r.documents_added || 0);
+            }, 0);
+            
+            Outputs.totalDocumentsAdded = totalDocuments;
+            Outputs.averageDocumentsPerTitle = result.successful > 0 ? Math.round(totalDocuments / result.successful) : 0;
+            Outputs.successRate = Math.round((result.successful / result.total_titles) * 100);
+            
+            if (result.successful === result.total_titles) {
+                Outputs.message = `🎉 All ${result.total_titles} titles enhanced successfully! Added ${totalDocuments} knowledge sources.`;
+                Outputs.statusIcon = '✅';
+            } else if (result.successful > 0) {
+                Outputs.message = `⚠️ Partial success: ${result.successful}/${result.total_titles} titles enhanced. Added ${totalDocuments} knowledge sources.`;
+                Outputs.statusIcon = '⚠️';
+            } else {
+                Outputs.message = `❌ No titles were successfully enhanced. Check individual results for details.`;
+                Outputs.statusIcon = '❌';
+            }
+
+        } else {
+            throw new Error(result.error || 'Bulk enhancement failed');
+        }
+
+    } catch (error) {
+        console.error('❌ Bulk enhancement error:', error);
+        Outputs.success = false;
+        Outputs.error = error.message;
+        Outputs.message = `Bulk enhancement failed: ${error.message}`;
+        Outputs.statusIcon = '❌';
+    }
+}
+
+// =============================================================================
+// 5. ✅ NEW: SYSTEM STATUS & VALIDATION
+// =============================================================================
+
+async function checkSystemStatus() {
+    try {
+        const rag_url = Inputs.rag_url;
+        
+        // Get user ID
+        let userID = 'default_user';
+        try {
+            const supabase = await Noodl.Variables.supabase;
+            const userData = await supabase.auth.getUser();
+            if (userData?.data?.user?.id) {
+                userID = userData.data.user.id;
+            }
+        } catch (authError) {
+            console.log('⚠️ Auth error, using default_user');
+        }
+
+        console.log('🔍 Checking knowledge gap system status...');
+
+        const url = `${rag_url}/gap_filler/status?user_id=${encodeURIComponent(userID)}`;
+
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const result = await response.json();
+
+        if (result.status === 'operational') {
+            console.log('✅ System is operational');
+
+            Outputs.success = true;
+            Outputs.systemStatus = result;
+            Outputs.operational = true;
+            Outputs.userID = result.user_id || userID;
+            
+            // Document statistics
+            const stats = result.document_statistics || {};
+            Outputs.totalGapDocuments = stats.total || 0;
+            Outputs.completedDocuments = stats.completed || 0;
+            Outputs.inVectorStore = stats.in_vector_store || 0;
+            Outputs.pendingEmbedding = stats.pending_embedding || 0;
+            
+            // API status
+            const apiStatus = result.api_status || {};
+            Outputs.linkupAvailable = apiStatus.linkup_available || false;
+            Outputs.arxivAvailable = apiStatus.arxiv_available || false;
+            Outputs.httpSupabaseOperational = apiStatus.http_supabase_operational || false;
+            
+            // Health indicators
+            Outputs.systemHealthy = stats.total === 0 || (stats.completed / stats.total) > 0.8;
+            Outputs.processingEfficiency = stats.total > 0 ? Math.round((stats.completed / stats.total) * 100) : 100;
+            
+            Outputs.message = `System operational - ${stats.completed}/${stats.total} documents processed`;
+
+        } else {
+            throw new Error('System not operational');
+        }
+
+    } catch (error) {
+        console.error('❌ System status check error:', error);
+        Outputs.success = false;
+        Outputs.operational = false;
+        Outputs.error = error.message;
+        Outputs.message = `System check failed: ${error.message}`;
+    }
+}
+
+// =============================================================================
+// 6. ✅ NEW: RUN SELECTED FUNCTION
+// =============================================================================
+
+// Determine which function to run based on Inputs.functionType
+const functionType = Inputs.functionType || 'analyzeKnowledgeGaps';
+
+switch(functionType) {
+    case 'analyzeKnowledgeGaps':
+        analyzeKnowledgeGaps();
+        break;
+    case 'analyzeOpenGapsOnly':
+        analyzeOpenGapsOnly();
+        break;
+    case 'enhanceSingleTitle':
+        enhanceSingleTitle();
+        break;
+    case 'enhanceBulkTitles':
+        enhanceBulkTitles();
+        break;
+    case 'checkSystemStatus':
+        checkSystemStatus();
+        break;
+    default:
+        // Default to analyzing gaps
+        analyzeKnowledgeGaps();
+}

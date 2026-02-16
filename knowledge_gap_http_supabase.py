@@ -41,6 +41,10 @@ try:
 except ImportError:
     MANUAL_SUGGESTIONS_AVAILABLE = False
 
+# Try to import embedding manager from main module
+# embedding_manager will be imported when needed to avoid circular imports
+embedding_manager = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -139,10 +143,12 @@ class HTTPSupabaseClient:
     
     def __init__(self):
         self.SUPABASE_URL = os.getenv("SUPABASE_URL")
-        self.SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+        # Prefer service role key for backend operations if available
+        raw_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
+        self.SUPABASE_KEY = raw_key.strip("'\" \n\t") if raw_key else None
         
         if not self.SUPABASE_URL or not self.SUPABASE_KEY:
-            raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in environment variables")
+            raise ValueError("SUPABASE_URL and SUPABASE_KEY (or SUPABASE_SERVICE_ROLE_KEY) must be set in environment variables")
         
         self.logger = logging.getLogger(__name__)
         
@@ -234,7 +240,8 @@ def run_async_in_thread(async_func):
     
     return sync_wrapper
 
-executor = ThreadPoolExecutor(max_workers=4)
+# Use a more conservative thread pool to prevent memory issues
+executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="knowledge_gap")
 
 def run_async_task(coro):
     """Run async coroutine in thread executor."""
@@ -368,9 +375,12 @@ class KnowledgeGapAnalyzer:
         """Analyze all NEW status titles to identify knowledge gaps with user tracking."""
         
         try:
-            # Use HTTP client to get NEW titles
-            response = self.supabase.table("Titles").select("*").eq("status", "NEW").execute()
-            titles = response.data
+            # Use HTTP client to get NEW titles (check both 'NEW' and 'New' statuses)
+            response_new = self.supabase.table("Titles").select("*").eq("status", "NEW").execute()
+            response_new_lower = self.supabase.table("Titles").select("*").eq("status", "New").execute()
+            
+            # Combine results from both queries
+            titles = response_new.data + response_new_lower.data
             
             if not titles:
                 self.logger.info("No NEW titles found")
@@ -395,16 +405,20 @@ class KnowledgeGapAnalyzer:
         """Analyze NEW status titles that don't have gaps closed yet with user tracking."""
         
         try:
-            # Query for NEW titles that don't have gaps closed
-            response = self.supabase.table("Titles").select("*").eq("status", "NEW").execute()
+            # Query for NEW titles that don't have gaps closed (check both 'NEW' and 'New' statuses)
+            response_new = self.supabase.table("Titles").select("*").eq("status", "NEW").execute()
+            response_new_lower = self.supabase.table("Titles").select("*").eq("status", "New").execute()
             
-            if not response.data:
+            # Combine results from both queries
+            titles = response_new.data + response_new_lower.data
+            
+            if not titles:
                 self.logger.info("No NEW titles found")
                 return []
             
             # Filter out titles that already have gaps closed
             titles_with_open_gaps = []
-            for title in response.data:
+            for title in titles:
                 gaps_closed = title.get("knowledge_gaps_closed", False)
                 if not gaps_closed:  # Include titles where gaps are not closed or field is null/false
                     titles_with_open_gaps.append(title)
@@ -428,20 +442,41 @@ class KnowledgeGapAnalyzer:
             self.logger.error(f"Error fetching titles with open gaps: {e}")
             return []
     
-    async def _analyze_single_title(self, title_data: Dict, user_id: str = None) -> Optional[KnowledgeGap]:
-        """Analyze a single title to identify its knowledge requirements with user tracking."""
+    async def _analyze_single_title(self, title_data: Dict, user_id: str = None, content_outline: str = None) -> Optional[KnowledgeGap]:
+        """Analyze a single title to identify its knowledge requirements with user tracking.
+        
+        Args:
+            title_data: Dictionary containing title information
+            user_id: Optional user ID for tracking
+            content_outline: Optional content outline from frontend (takes priority)
+        """
         
         try:
             # Extract keywords from multiple available fields
             focus_keyword = self._extract_best_focus_keyword(title_data)
             
             # Get other content fields
-            content_outline = title_data.get('content_outline', '')
-            key_points = title_data.get('key_points', '')
-            target_audience = title_data.get('target_audience', '')
-            business_goal = title_data.get('business_goal', '')
-            title_text = title_data.get('Title', '')
-            user_description = title_data.get('userDescription', '')
+            title_text = title_data.get('Title') or ''
+            user_description = title_data.get('userDescription') or ''
+            key_points = title_data.get('key_points') or ''
+            target_audience = title_data.get('target_audience') or ''
+            business_goal = title_data.get('business_goal') or ''
+            
+            # Priority logic for content_outline:
+            # 1. Use content_outline parameter if provided and not empty
+            # 2. Else use title_data['content_outline'] if exists and not empty
+            # 3. Else fallback to Title + userDescription
+            outline_to_use = ''
+            if content_outline and content_outline.strip():
+                outline_to_use = content_outline
+                self.logger.info(f"📋 Using content_outline from parameter for title {title_data.get('id')}")
+            elif title_data.get('content_outline') and title_data.get('content_outline').strip():
+                outline_to_use = title_data.get('content_outline')
+                self.logger.info(f"📋 Using content_outline from database for title {title_data.get('id')}")
+            else:
+                # Fallback: combine Title + userDescription
+                outline_to_use = f"{title_text} {user_description}".strip()
+                self.logger.info(f"📋 Using Title + Description fallback for title {title_data.get('id')} (no outline provided)")
             
             # Combine all keyword sources for analysis
             all_keywords = self._get_all_keywords_combined(title_data)
@@ -452,12 +487,12 @@ class KnowledgeGapAnalyzer:
             
             self.logger.info(f"📋 Analyzing title {title_data.get('id')}: '{focus_keyword}' (user: {user_id})")
             
-            # Categorize topic using all available keyword data
-            topic_category = self._categorize_topic(focus_keyword, content_outline, all_keywords)
+            # Categorize topic using all available keyword data and the prioritized outline
+            topic_category = self._categorize_topic(focus_keyword, outline_to_use, all_keywords)
             
-            # Identify data requirements using rule-based approach
+            # Identify data requirements using rule-based approach with the prioritized outline
             data_requirements = self._identify_data_requirements_rule_based(
-                focus_keyword, content_outline, topic_category, all_keywords
+                focus_keyword, outline_to_use, topic_category, all_keywords
             )
             
             if not data_requirements or not data_requirements.get('data_types'):
@@ -483,12 +518,13 @@ class KnowledgeGapAnalyzer:
         """Extract the best focus keyword from all available keyword fields."""
         
         # Priority 1: Use focus_keyword if available
-        focus_keyword = title_data.get('focus_keyword', '').strip()
+        focus_keyword = title_data.get('focus_keyword') or ''
+        focus_keyword = focus_keyword.strip() if focus_keyword else ''
         if focus_keyword:
             return focus_keyword
         
         # Priority 2: Use first enhanced_primary_keyword
-        enhanced_primary = title_data.get('enhanced_primary_keywords', '')
+        enhanced_primary = title_data.get('enhanced_primary_keywords') or ''
         if enhanced_primary:
             try:
                 # Handle both string and list formats
@@ -505,7 +541,7 @@ class KnowledgeGapAnalyzer:
                     return enhanced_primary.split(',')[0].strip()
         
         # Priority 3: Use primary_keywords_json
-        primary_json = title_data.get('primary_keywords_json', '')
+        primary_json = title_data.get('primary_keywords_json') or ''
         if primary_json:
             try:
                 # Clean up the JSON string format from your data
@@ -517,14 +553,14 @@ class KnowledgeGapAnalyzer:
                 pass
         
         # Priority 4: Extract from title text
-        title_text = title_data.get('Title', '')
+        title_text = title_data.get('Title') or ''
         if title_text:
             meaningful_keyword = self._extract_keyword_from_title(title_text)
             if meaningful_keyword:
                 return meaningful_keyword
         
         # Priority 5: Use userDescription key terms
-        user_desc = title_data.get('userDescription', '')
+        user_desc = title_data.get('userDescription') or ''
         if user_desc:
             words = user_desc.split()[:4]
             return ' '.join(words).strip('.,!?;:')
@@ -537,7 +573,7 @@ class KnowledgeGapAnalyzer:
         all_keywords = []
         
         # Extract from enhanced_primary_keywords
-        enhanced_primary = title_data.get('enhanced_primary_keywords', '')
+        enhanced_primary = title_data.get('enhanced_primary_keywords') or ''
         if enhanced_primary:
             try:
                 if isinstance(enhanced_primary, str):
@@ -549,7 +585,7 @@ class KnowledgeGapAnalyzer:
                 pass
         
         # Extract from enhanced_secondary_keywords  
-        enhanced_secondary = title_data.get('enhanced_secondary_keywords', '')
+        enhanced_secondary = title_data.get('enhanced_secondary_keywords') or ''
         if enhanced_secondary:
             try:
                 if isinstance(enhanced_secondary, str):
@@ -561,7 +597,7 @@ class KnowledgeGapAnalyzer:
                 pass
         
         # Extract from primary_keywords_json
-        primary_json = title_data.get('primary_keywords_json', '')
+        primary_json = title_data.get('primary_keywords_json') or ''
         if primary_json:
             try:
                 clean_json = primary_json.replace('\\"', '"').strip('"')
@@ -571,7 +607,7 @@ class KnowledgeGapAnalyzer:
                 pass
         
         # Extract from secondary_keywords_json
-        secondary_json = title_data.get('secondary_keywords_json', '')
+        secondary_json = title_data.get('secondary_keywords_json') or ''
         if secondary_json:
             try:
                 clean_json = secondary_json.replace('\\"', '"').strip('"')
@@ -581,8 +617,8 @@ class KnowledgeGapAnalyzer:
                 pass
         
         # Combine with title and description
-        title_text = title_data.get('Title', '')
-        user_desc = title_data.get('userDescription', '')
+        title_text = title_data.get('Title') or ''
+        user_desc = title_data.get('userDescription') or ''
         
         combined = f"{' '.join(all_keywords)} {title_text} {user_desc}"
         return combined.lower()
@@ -743,9 +779,19 @@ class KnowledgeGapAnalyzer:
 class MultiSourceResearcher:
     """Research functionality using HTTP Supabase client with user tracking"""
     
-    def __init__(self, supabase_client):
+    def __init__(self, supabase_client, llm_provider: str = "deepseek"):
         self.supabase = supabase_client
         self.logger = logging.getLogger(__name__)
+        self.llm_provider = llm_provider
+        
+        # Initialize LLM for gap consolidation
+        self.llm = None
+        try:
+            from llm_provider import LLMProviderFactory
+            self.llm = LLMProviderFactory.get_llm_instance(llm_provider)
+            self.logger.info(f"✅ LLM initialized ({llm_provider}) for gap consolidation")
+        except Exception as e:
+            self.logger.warning(f"⚠️ LLM not available for gap consolidation: {e}")
         
         # Initialize Linkup client if available
         self.linkup_client = None
@@ -1069,56 +1115,83 @@ class MultiSourceResearcher:
         return sources
     
     def _determine_linkup_depth(self, query: str, data_type: str = None, gap: 'KnowledgeGap' = None) -> str:
-        """Intelligently determine Linkup search depth based on query characteristics."""
+        """Intelligently determine Linkup search depth based on query characteristics.
         
-        # Default to standard for basic queries
+        Optimization Strategy:
+        - Deep search (10x cost): Use only for complex research requiring comprehensive analysis
+        - Standard search (1x cost): Use for most queries including news, basic research, simple lookups
+        
+        Deep search is justified when:
+        1. Complex academic research or comprehensive analysis needed
+        2. Multiple high-value source types required (academic + industry reports)
+        3. High-priority gaps (priority_score >= 8)
+        4. Complex methodology or research design queries
+        """
+        
+        # Default to standard - optimize for cost while maintaining quality
         depth = "standard"
         
-        # Check for complex query indicators
-        complexity_indicators = [
-            "analysis", "research", "study", "thesis", "comprehensive",
-            "detailed", "in-depth", "thorough", "academic", "scholarly",
-            "advanced", "technical", "scientific", "methodology", "literature"
+        # High-value source types that justify deep search cost
+        high_value_types_for_deep = [
+            DataSourceType.ACADEMIC_PAPERS.value,  # Peer-reviewed research needs thorough analysis
+            DataSourceType.INDUSTRY_REPORTS.value,  # Business intelligence requires comprehensive data
         ]
         
-        # Check for academic/source type indicators
-        academic_types = [
-            DataSourceType.ACADEMIC_PAPERS.value,
-            DataSourceType.GOVERNMENT_DATA.value,
-            DataSourceType.INDUSTRY_REPORTS.value,
-            DataSourceType.TEXTBOOKS.value
+        # Source types that DON'T need deep (standard is sufficient)
+        standard_search_types = [
+            DataSourceType.NEWS_ARTICLES.value,  # News is fast-changing, standard search adequate
+            DataSourceType.GOVERNMENT_DATA.value,  # Government sites are well-indexed, standard OK
+        ]
+        
+        # Complex query indicators that justify deep search
+        deep_complexity_indicators = [
+            "comprehensive analysis", "in-depth research", "systematic review",
+            "methodology", "literature review", "meta-analysis", "case study analysis"
         ]
         
         # Convert to lowercase for matching
         query_lower = query.lower()
         
-        # Complex query detection
-        complexity_score = sum(1 for indicator in complexity_indicators if indicator in query_lower)
+        # Check if this is a high-value source type requiring deep research
+        if data_type in high_value_types_for_deep:
+            # Additional check: Only use deep if query is truly complex
+            has_complex_indicator = any(indicator in query_lower for indicator in deep_complexity_indicators)
+            complexity_score = sum(1 for indicator in ["analysis", "research", "study", "comprehensive", 
+                                                      "detailed", "methodology"] if indicator in query_lower)
+            
+            # Use deep only if query is complex OR gap has high priority
+            if has_complex_indicator or complexity_score >= 2:
+                depth = "deep"
+                self.logger.info(f"🎯 DEPTH DECISION: Using deep for {data_type} - complex query detected")
+            # For statistical data, use deep only if truly comprehensive
+            elif data_type == DataSourceType.STATISTICAL_DATA.value and complexity_score >= 2:
+                depth = "deep"
         
-        # Data type-based depth selection
-        if data_type in academic_types:
-            depth = "deep"
-        elif data_type == DataSourceType.STATISTICAL_DATA.value:
-            depth = "deep"
-        elif complexity_score >= 2:
-            depth = "deep"
-        elif any(indicator in query_lower for indicator in ["2025", "2024", "latest", "current"]):
-            depth = "deep"
+        # News articles and government data - always use standard (fast, cost-effective)
+        elif data_type in standard_search_types:
+            depth = "standard"
+            self.logger.info(f"🎯 DEPTH DECISION: Using standard for {data_type} - optimized for speed and cost")
         
-        # Gap-based depth selection
+        # Gap-based depth selection - only for high-priority, multi-source gaps
         if gap and hasattr(gap, 'data_types_needed'):
-            academic_data_types = [dt for dt in gap.data_types_needed if dt in academic_types]
-            if len(academic_data_types) >= 2:
+            academic_data_types = [dt for dt in gap.data_types_needed 
+                                   if dt in high_value_types_for_deep]
+            # Only use deep if multiple high-value types AND high priority
+            if len(academic_data_types) >= 2 and hasattr(gap, 'priority_score') and gap.priority_score and gap.priority_score >= 8:
                 depth = "deep"
-            elif gap.priority_score and gap.priority_score >= 8:
-                depth = "deep"
+                self.logger.info(f"🎯 DEPTH DECISION: Using deep - high priority gap ({gap.priority_score}) with multiple high-value sources")
         
-        self.logger.info(f"🎯 DEPTH DECISION: '{query}' → {depth} (complexity: {complexity_score}, type: {data_type})")
+        self.logger.info(f"🎯 DEPTH DECISION: '{query[:50]}...' → {depth} (type: {data_type}) [Cost: {'10x' if depth == 'deep' else '1x'}]")
         return depth
 
     async def _linkup_search(self, query: str, max_results: int = 5, user_id: str = None, 
                            data_type: str = None, gap: 'KnowledgeGap' = None) -> List[Dict]:
-        """Perform Linkup search with intelligent depth selection and user tracking."""
+        """Perform Linkup search with intelligent depth selection and user tracking.
+        
+        Optimization:
+        - Standard search: Uses searchResults for raw data (faster, lower cost)
+        - Deep search: Uses sourcedAnswer when available to maximize value (get citations, authors)
+        """
         
         if not self.linkup_client:
             self.logger.error("❌ Linkup client not initialized")
@@ -1128,23 +1201,76 @@ class MultiSourceResearcher:
             # Determine optimal depth
             depth = self._determine_linkup_depth(query, data_type, gap)
             
-            self.logger.info(f"🔍 LINKUP SEARCH: '{query}' (max: {max_results}, depth: {depth}, user: {user_id})")
+            # For deep searches, use sourcedAnswer to maximize value (get citations, structured data)
+            # For standard searches, use searchResults (faster, cost-effective)
+            output_type = "sourcedAnswer" if depth == "deep" else "searchResults"
+            
+            self.logger.info(f"🔍 LINKUP SEARCH: '{query}' (max: {max_results}, depth: {depth}, output: {output_type}, user: {user_id})")
             
             # Make the API call
             response = await asyncio.to_thread(
                 self.linkup_client.search,
                 query=query,
                 depth=depth,
-                output_type="searchResults"
+                output_type=output_type
             )
             
             self.logger.info(f"📋 Response type: {type(response)}")
             
             results = []
             
-            # Handle LinkupSearchResults with Pydantic objects
-            if hasattr(response, 'results') and response.results:
-                self.logger.info(f"🔍 Processing {len(response.results)} Linkup results...")
+            # Handle different response types based on output_type
+            if output_type == "sourcedAnswer":
+                # sourcedAnswer has different structure - extract answer and sources with citations
+                try:
+                    answer = getattr(response, 'answer', getattr(response, 'text', ''))
+                    sources = getattr(response, 'sources', getattr(response, 'citations', []))
+                    
+                    if answer:
+                        self.logger.info(f"🔍 Processing sourcedAnswer response (deep search) with {len(sources) if sources else 0} citations...")
+                        
+                        # Extract metadata from sources for citations
+                        citations = []
+                        if sources:
+                            for source in sources[:max_results]:
+                                citation_url = getattr(source, 'url', getattr(source, 'source_url', ''))
+                                citation_title = getattr(source, 'title', getattr(source, 'name', ''))
+                                citation_snippet = getattr(source, 'snippet', getattr(source, 'content', ''))
+                                
+                                if citation_url:
+                                    citations.append({
+                                        'url': citation_url,
+                                        'title': citation_title,
+                                        'snippet': citation_snippet[:200] if citation_snippet else ''
+                                    })
+                        
+                        # Format as comprehensive result with citations
+                        formatted_result = {
+                            'title': f"Research Analysis: {query[:60]}",
+                            'description': answer,  # Full answer from deep search
+                            'summary': answer[:500] + "..." if len(answer) > 500 else answer,
+                            'url': citations[0]['url'] if citations else '',
+                            'citations': citations,  # All citations/sources
+                            'user_id': user_id,
+                            'content_length': len(answer),
+                            'citation_count': len(citations),
+                            'search_depth': 'deep'  # Mark as deep search result
+                        }
+                        
+                        results.append(formatted_result)
+                        self.logger.info(f"   ✅ Deep search result: {len(answer)} chars, {len(citations)} citations")
+                    else:
+                        self.logger.warning("⚠️ sourcedAnswer response has no answer content")
+                except Exception as e:
+                    self.logger.error(f"   ❌ Error processing sourcedAnswer: {e}")
+                    # Fallback: try to process as searchResults
+                    if hasattr(response, 'results'):
+                        self.logger.info("   🔄 Falling back to searchResults processing...")
+                        output_type = "searchResults"
+            
+            # Handle LinkupSearchResults (standard search or fallback)
+            if output_type == "searchResults" and hasattr(response, 'results') and response.results:
+                self.logger.info(f"🔍 Processing {len(response.results)} Linkup searchResults...")
                 
                 for i, result in enumerate(response.results[:max_results]):
                     try:
@@ -1153,24 +1279,54 @@ class MultiSourceResearcher:
                         content = getattr(result, 'content', 'No description')
                         url = getattr(result, 'url', 'No URL')
                         
-                        # Truncate content if too long
-                        description = content[:500] + "..." if len(content) > 500 else content
+                        # Extract additional metadata if available (from deep search results)
+                        author = getattr(result, 'author', None)
+                        published_date = getattr(result, 'published', getattr(result, 'date', None))
                         
+                        # Ensure title is not empty or None
+                        if not title or title.strip() == '' or title == 'Unknown Title':
+                            # Try to extract title from URL or content
+                            if url and url != 'No URL':
+                                # Extract domain or filename from URL
+                                try:
+                                    from urllib.parse import urlparse
+                                    parsed_url = urlparse(url)
+                                    domain = parsed_url.netloc.replace('www.', '')
+                                    title = f"Article from {domain}"
+                                except:
+                                    title = f"Research Source {i+1}"
+                            elif content and content != 'No description':
+                                # Use first part of content as title
+                                title = content[:50].strip() + "..." if len(content) > 50 else content.strip()
+                            else:
+                                title = f"Research Source {i+1}"
+                        
+                        # Preserve full content - no truncation
                         formatted_result = {
-                            'title': title,
-                            'description': description,
+                            'title': title.strip(),
+                            'description': content,  # FULL content preserved
+                            'summary': content[:500] + "..." if len(content) > 500 else content,
                             'url': url,
-                            'user_id': user_id
+                            'user_id': user_id,
+                            'content_length': len(content),
+                            'search_depth': depth  # Track which depth was used
                         }
                         
+                        # Add metadata if available (especially from deep searches)
+                        if author:
+                            formatted_result['author'] = author
+                        if published_date:
+                            formatted_result['published'] = published_date
+                        
                         results.append(formatted_result)
-                        self.logger.info(f"   ✅ Result {i+1}: {title[:50]}...")
+                        metadata_info = f" (Author: {author}, Date: {published_date})" if (author or published_date) else ""
+                        self.logger.info(f"   ✅ Result {i+1}: {title[:50]}... (Content: {len(content)} chars{metadata_info})")
                         
                     except Exception as result_error:
                         self.logger.error(f"   ❌ Error processing result {i+1}: {result_error}")
                         continue
-            else:
-                self.logger.warning(f"⚠️ No results found in response")
+            elif output_type == "searchResults":
+                self.logger.warning(f"⚠️ No searchResults found in response")
             
             self.logger.info(f"📊 LINKUP SUCCESS: Extracted {len(results)} usable results")
             return results
@@ -1178,6 +1334,228 @@ class MultiSourceResearcher:
         except Exception as e:
             self.logger.error(f"❌ LINKUP ERROR for '{query}': {e}")
             return []
+    
+    async def _consolidate_gaps_with_llm(self, gaps: List[KnowledgeGap]) -> Dict[str, Any]:
+        """Use LLM to analyze gaps and create consolidated research queries.
+        
+        This reduces API calls by grouping related gaps and creating comprehensive
+        research queries that cover multiple gaps simultaneously.
+        
+        Returns:
+            Dict with:
+            - consolidated_queries: List of consolidated query objects
+            - gap_mapping: Map of gap indices to query indices
+        """
+        
+        if not self.llm:
+            self.logger.warning("⚠️ LLM not available - falling back to individual gap processing")
+            return {'consolidated_queries': [], 'gap_mapping': {}}
+        
+        try:
+            # Prepare gap information for LLM
+            gap_summaries = []
+            for i, gap in enumerate(gaps):
+                gap_summaries.append({
+                    'index': i,
+                    'focus_keyword': gap.focus_keyword,
+                    'data_types': gap.data_types_needed,
+                    'title_id': gap.title_id,
+                    'topic_category': getattr(gap, 'topic_category', 'general'),
+                    'priority': getattr(gap, 'priority_score', 0.5)
+                })
+            
+            # Create prompt for LLM
+            prompt = f"""You are analyzing {len(gaps)} knowledge gaps to consolidate research queries and reduce API calls.
+
+Knowledge Gaps:
+{json.dumps(gap_summaries, indent=2)}
+
+Task: Group related gaps and create consolidated research queries that efficiently cover multiple gaps with shared themes.
+
+Guidelines:
+1. Group gaps with similar/related focus keywords or topics
+2. Create comprehensive queries that address multiple gaps simultaneously
+3. For each consolidated query, specify:
+   - The query text (natural language, optimized for web search)
+   - The data type(s) needed (academic_papers, industry_reports, news_articles, statistical_data, government_data, textbooks)
+   - Which gap indices (0-{len(gaps)-1}) this query addresses
+4. Prioritize deep search (10x cost) only for complex, high-value queries
+5. Use standard search for simpler queries
+6. Maximum 5-7 consolidated queries recommended for efficiency
+
+Return JSON format:
+{{
+  "consolidated_queries": [
+    {{
+      "query": "comprehensive research query text",
+      "data_types": ["academic_papers", "industry_reports"],
+      "gap_indices": [0, 2, 5],
+      "search_depth": "deep",
+      "rationale": "why these gaps are grouped together"
+    }}
+  ],
+  "total_api_calls": <number of consolidated queries>
+}}
+
+Focus on creating queries that maximize information coverage while minimizing API calls."""
+            
+            # Call LLM
+            response = await asyncio.to_thread(
+                self.llm.complete,
+                prompt
+            )
+            
+            # Parse LLM response
+            response_text = str(response).strip()
+            
+            # Extract JSON from response (handle markdown code blocks)
+            import re
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            if json_match:
+                response_text = json_match.group(0)
+            
+            consolidation_plan = json.loads(response_text)
+            
+            self.logger.info(f"🤖 LLM Consolidation: {len(consolidation_plan.get('consolidated_queries', []))} queries for {len(gaps)} gaps")
+            self.logger.info(f"   Estimated API calls: {consolidation_plan.get('total_api_calls', 'unknown')}")
+            
+            return consolidation_plan
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error in LLM gap consolidation: {e}")
+            import traceback
+            self.logger.error(f"   Traceback: {traceback.format_exc()}")
+            return {'consolidated_queries': [], 'gap_mapping': {}}
+    
+    async def research_gaps_batch(self, gaps: List[KnowledgeGap], user_id: str = None, 
+                                  use_consolidation: bool = True) -> Dict[str, Dict[str, Any]]:
+        """Research multiple gaps efficiently using LLM consolidation.
+        
+        This method:
+        1. Uses LLM to consolidate related gaps into fewer queries
+        2. Executes consolidated queries (fewer API calls)
+        3. Distributes results back to individual gaps
+        
+        Args:
+            gaps: List of KnowledgeGap objects to research
+            user_id: User ID for tracking
+            use_consolidation: Whether to use LLM consolidation (default: True)
+        
+        Returns:
+            Dict mapping gap.title_id to research_results
+        """
+        
+        if len(gaps) == 1 or not use_consolidation or not self.llm:
+            # Fallback to individual processing
+            self.logger.info(f"📋 Processing {len(gaps)} gap(s) individually")
+            results = {}
+            for gap in gaps:
+                results[gap.title_id] = await self.research_knowledge_gap(gap, user_id)
+            return results
+        
+        self.logger.info(f"🤖 Using LLM consolidation to optimize research for {len(gaps)} gaps")
+        
+        # Step 1: Consolidate gaps using LLM
+        consolidation_plan = await self._consolidate_gaps_with_llm(gaps)
+        consolidated_queries = consolidation_plan.get('consolidated_queries', [])
+        
+        if not consolidated_queries:
+            self.logger.warning("⚠️ LLM consolidation failed - falling back to individual processing")
+            results = {}
+            for gap in gaps:
+                results[gap.title_id] = await self.research_knowledge_gap(gap, user_id)
+            return results
+        
+        # Step 2: Execute consolidated queries
+        consolidated_results = {}
+        for i, query_obj in enumerate(consolidated_queries):
+            query_text = query_obj.get('query', '')
+            data_types = query_obj.get('data_types', [])
+            gap_indices = query_obj.get('gap_indices', [])
+            search_depth = query_obj.get('search_depth', 'standard')
+            
+            self.logger.info(f"🔍 Consolidated Query {i+1}/{len(consolidated_queries)}: '{query_text[:60]}...'")
+            self.logger.info(f"   Addressing gaps: {gap_indices} | Data types: {data_types} | Depth: {search_depth}")
+            
+            # Execute query for each data type
+            for data_type in data_types:
+                try:
+                    # Create a temporary gap object for depth determination
+                    temp_gap = gaps[gap_indices[0]] if gap_indices else None
+                    
+                    # Use consolidated query with appropriate depth
+                    sources = await self._linkup_search(
+                        query=query_text,
+                        max_results=min(8, len(gap_indices) * 2),  # Scale results by number of gaps
+                        user_id=user_id,
+                        data_type=data_type,
+                        gap=temp_gap
+                    )
+                    
+                    # Store results keyed by query index and data type
+                    key = f"query_{i}_{data_type}"
+                    consolidated_results[key] = {
+                        'sources': sources,
+                        'gap_indices': gap_indices,
+                        'data_type': data_type,
+                        'query': query_text
+                    }
+                    
+                    self.logger.info(f"   ✅ Found {len(sources)} sources for {data_type}")
+                    
+                except Exception as e:
+                    self.logger.error(f"   ❌ Error executing consolidated query: {e}")
+                    consolidated_results[key] = {
+                        'sources': [],
+                        'gap_indices': gap_indices,
+                        'data_type': data_type,
+                        'error': str(e)
+                    }
+        
+        # Step 3: Distribute results back to individual gaps
+        gap_results = {}
+        for gap_idx, gap in enumerate(gaps):
+            gap_result = {
+                'title_id': gap.title_id,
+                'focus_keyword': gap.focus_keyword,
+                'sources_found': {},
+                'total_sources': 0,
+                'research_timestamp': datetime.now().isoformat(),
+                'research_summary': '',
+                'user_id': user_id,
+                'research_quality_score': 0,
+                'manus_suggestion_needed': False
+            }
+            
+            # Find all consolidated results that apply to this gap
+            for key, result_data in consolidated_results.items():
+                if gap_idx in result_data.get('gap_indices', []):
+                    data_type = result_data.get('data_type')
+                    sources = result_data.get('sources', [])
+                    
+                    # Initialize data type if needed
+                    if data_type not in gap_result['sources_found']:
+                        gap_result['sources_found'][data_type] = []
+                    
+                    # Add sources to this gap's results
+                    gap_result['sources_found'][data_type].extend(sources)
+                    gap_result['total_sources'] += len(sources)
+            
+            # Calculate quality score
+            gap_result['research_quality_score'] = self._calculate_research_quality(gap_result)
+            gap_result['manus_suggestion_needed'] = gap_result['research_quality_score'] < 30
+            gap_result['research_summary'] = self._create_research_summary(gap_result)
+            
+            gap_results[gap.title_id] = gap_result
+            
+            self.logger.info(f"   📊 Gap {gap_idx+1}: {gap.focus_keyword} → {gap_result['total_sources']} sources")
+        
+        api_calls_made = len(consolidated_queries) * len(set(q.get('data_types', []) for q in consolidated_queries))
+        api_calls_saved = (len(gaps) * sum(len(g.data_types_needed) for g in gaps)) - api_calls_made
+        
+        self.logger.info(f"✅ Batch research complete: {api_calls_made} API calls (saved {api_calls_saved} calls via consolidation)")
+        
+        return gap_results
     
     def _calculate_research_quality(self, research_results: Dict) -> int:
         """Calculate research quality score (0-100) to determine if Manus-wide research is needed."""
@@ -1261,7 +1639,10 @@ class EnhancedRAGKnowledgeEnhancer:
         self.suggestions_generator = None
         if MANUAL_SUGGESTIONS_AVAILABLE:
             try:
-                self.suggestions_generator = ManualActionSuggestionsGenerator(supabase_client)
+                self.suggestions_generator = ManualActionSuggestionsGenerator(
+                    supabase_client, 
+                    linkup_client=self.linkup_client
+                )
                 self.logger.info("✅ Manual action suggestions generator initialized")
             except Exception as e:
                 self.logger.warning(f"⚠️ Failed to initialize manual suggestions: {e}")
@@ -1347,11 +1728,38 @@ class EnhancedRAGKnowledgeEnhancer:
         return config
 
     def _generate_additional_search_queries(self, title_name: str, focus_keyword: str, 
-                                          research_config: Dict) -> List[Dict]:
-        """Generate expanded search queries for additional knowledge."""
+                                          research_config: Dict, content_outline: str = None) -> List[Dict]:
+        """Generate expanded search queries for additional knowledge.
+        
+        Args:
+            title_name: Title of the content
+            focus_keyword: Focus keyword for the content
+            research_config: Research configuration dict
+            content_outline: Optional content outline to generate more specific queries
+        """
         
         queries = []
         base_results = research_config['base_results']
+        
+        # If content_outline is provided, extract key points for more targeted queries
+        outline_keywords = []
+        if content_outline and content_outline.strip():
+            # Extract key phrases from outline (simple extraction - can be enhanced with NLP)
+            outline_lower = content_outline.lower()
+            # Look for bullet points, numbered lists, or key phrases
+            import re
+            # Extract phrases after bullets, numbers, or headers
+            patterns = [
+                r'[-•*]\s*([^\n]+)',  # Bullet points
+                r'\d+\.\s*([^\n]+)',   # Numbered lists
+                r'##?\s*([^\n]+)',     # Headers
+            ]
+            for pattern in patterns:
+                matches = re.findall(pattern, outline_lower)
+                outline_keywords.extend([m.strip()[:50] for m in matches if len(m.strip()) > 10])
+            
+            if outline_keywords:
+                self.logger.info(f"📋 Extracted {len(outline_keywords)} key points from content_outline for query generation")
         
         # Category-specific query templates
         query_templates = {
@@ -1396,27 +1804,43 @@ class EnhancedRAGKnowledgeEnhancer:
                         'max_results': base_results
                     })
         
+        # Add outline-specific queries if we extracted keywords from content_outline
+        if outline_keywords:
+            # Take top 3-5 most relevant outline points for targeted queries
+            for i, outline_point in enumerate(outline_keywords[:5]):
+                queries.append({
+                    'query': f"{focus_keyword} {outline_point}",
+                    'source_type': 'outline_specific',
+                    'max_results': base_results
+                })
+                self.logger.info(f"  📋 Added outline-specific query: '{focus_keyword} {outline_point}'")
+        
         return queries
 
     async def _search_linkup_with_filtering(self, query: str, max_results: int, 
                                         user_id: str, existing_urls: set) -> List[Dict]:
-        """Search Linkup and filter out existing URLs."""
+        """Search Linkup and filter out existing URLs.
+        
+        Optimization: Additional research typically doesn't need deep search (use standard).
+        This method is for supplementary searches, not primary research.
+        """
         
         if not self.linkup_client:
             self.logger.warning(f"⚠️ Linkup client not available for query: '{query}'")
             return []
         
         try:
-            self.logger.info(f"🔍 LINKUP SEARCH: '{query}' (max: {max_results}, user: {user_id})")
+            # For additional/supplementary research, prefer standard (cost-effective)
+            # Deep search should be reserved for primary research tasks
+            depth = "standard"  # Additional research = standard search
             
-            # Determine optimal depth for additional research
-            depth = self._determine_linkup_depth(query, source_type, None)
+            self.logger.info(f"🔍 LINKUP ADDITIONAL SEARCH: '{query}' (max: {max_results}, depth: {depth}, user: {user_id})")
             
             # ✅ FIXED: Remove await - Linkup search is synchronous
             search_response = self.linkup_client.search(
                 query=query,
                 depth=depth,
-                output_type="searchResults"
+                output_type="searchResults"  # Standard for additional research
             )
             
             self.logger.info(f"📋 Response type: {type(search_response)}")
@@ -1438,26 +1862,44 @@ class EnhancedRAGKnowledgeEnhancer:
                         content = getattr(result, 'content', getattr(result, 'description', 'No description'))
                         url = getattr(result, 'url', 'No URL')
                         
+                        # Ensure title is not empty or None
+                        if not title or title.strip() == '' or title == 'Unknown Title':
+                            # Try to extract title from URL or content
+                            if url and url != 'No URL':
+                                # Extract domain or filename from URL
+                                try:
+                                    from urllib.parse import urlparse
+                                    parsed_url = urlparse(url)
+                                    domain = parsed_url.netloc.replace('www.', '')
+                                    title = f"Article from {domain}"
+                                except:
+                                    title = f"Additional Research Source {processed_count + 1}"
+                            elif content and content != 'No description':
+                                # Use first part of content as title
+                                title = content[:50].strip() + "..." if len(content) > 50 else content.strip()
+                            else:
+                                title = f"Additional Research Source {processed_count + 1}"
+                        
                         # Skip if URL already exists
                         if url in existing_urls:
                             self.logger.debug(f"⚠️ Skipping duplicate URL: {url}")
                             continue
                         
-                        # Truncate content if too long
-                        description = content[:500] + "..." if len(content) > 500 else content
-                        
+                        # Preserve full content - no truncation
                         formatted_result = {
-                            'title': title,
-                            'description': description,
+                            'title': title.strip(),
+                            'description': content,  # FULL content preserved
+                            'summary': content[:500] + "..." if len(content) > 500 else content,
                             'url': url,
                             'source': 'Linkup Additional Research',
                             'type': 'additional_research',
-                            'user_id': user_id
+                            'user_id': user_id,
+                            'content_length': len(content)
                         }
                         
                         results.append(formatted_result)
                         processed_count += 1
-                        self.logger.info(f"   ✅ Result {processed_count}: {title[:50]}...")
+                        self.logger.info(f"   ✅ Result {processed_count}: {title[:50]}... (Content: {len(content)} chars)")
                         
                     except Exception as result_error:
                         self.logger.error(f"   ❌ Error processing result {i+1}: {result_error}")
@@ -1474,7 +1916,7 @@ class EnhancedRAGKnowledgeEnhancer:
 
     def _create_enhanced_additional_content(self, source: Dict, title_name: str, 
                                           focus_keyword: str) -> str:
-        """Create enhanced content for additional knowledge sources."""
+        """Create enhanced content for additional knowledge sources with full content preservation."""
         
         content_parts = []
         
@@ -1486,10 +1928,10 @@ class EnhancedRAGKnowledgeEnhancer:
         content_parts.append(f"**Source Type:** {source.get('data_source_type', 'additional_research')}")
         content_parts.append("")
         
-        # Enhanced description
+        # Full content preservation - use complete description
         description = source.get('description', '')
         if description:
-            content_parts.append("## Content Overview")
+            content_parts.append("## Full Article Content")
             content_parts.append(description)
             content_parts.append("")
         
@@ -1506,6 +1948,7 @@ class EnhancedRAGKnowledgeEnhancer:
             content_parts.append(f"**Original URL:** {source_url}")
             content_parts.append(f"**Source Type:** {source.get('type', 'Additional Research')}")
             content_parts.append(f"**Research Date:** {datetime.now().strftime('%Y-%m-%d')}")
+            content_parts.append(f"**Content Length:** {len(description)} characters")
         
         return "\n".join(content_parts)
 
@@ -2022,27 +2465,37 @@ class EnhancedRAGKnowledgeEnhancer:
                 "user_id": user_id
             }).eq("id", doc_id).execute()
     
-    def _process_document_background(docid, collection_name, source_type="document"):
+    def _process_document_background(self, docid, collection_name, source_type="document", user_id=None):
         """Background task for processing documents with enhanced error handling."""
         try:
             # Update status to processing
-            supabase.table("lindex_documents").update({
-                "processing_status": "processing"
+            self.supabase.table("lindex_documents").update({
+                "processing_status": "processing",
+                "user_id": user_id
             }).eq("id", docid).execute()
             
             # Ensure optimizer is fitted
-            embedding_manager.ensure_optimizer_fitted()
+            try:
+                # Import embedding_manager when needed to avoid circular imports
+                import main
+                if hasattr(main, 'embedding_manager') and main.embedding_manager:
+                    main.embedding_manager.ensure_optimizer_fitted()
+                else:
+                    self.logger.warning("⚠️ Embedding manager not available - skipping optimizer fitting")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Could not access embedding manager: {e}")
             
             # Get document content
-            doc_response = supabase.table("lindex_documents").select(
+            doc_response = self.supabase.table("lindex_documents").select(
                 "parsedText"
             ).eq("id", docid).execute()
             
             if not doc_response.data or not doc_response.data[0].get("parsedText"):
-                logger.error(f"Document {docid} has no parsable content")
-                supabase.table("lindex_documents").update({
+                self.logger.error(f"Document {docid} has no parsable content")
+                self.supabase.table("lindex_documents").update({
                     "processing_status": "error",
-                    "error_message": "No parsable content found"
+                    "error_message": "No parsable content found",
+                    "user_id": user_id
                 }).eq("id", docid).execute()
                 return
                 
@@ -2050,7 +2503,7 @@ class EnhancedRAGKnowledgeEnhancer:
             
             # ✅ FIX: Enhanced error handling for vector processing
             try:
-                result = document_processor.process_document(
+                result = self.document_processor.process_document(
                     docid=docid, 
                     collection_name=collection_name,
                     source_type=source_type
@@ -2060,50 +2513,55 @@ class EnhancedRAGKnowledgeEnhancer:
                     doc_size = len(document_text)
                     chunk_count = result.get('embedding', {}).get('total_nodes', 0)
                     
-                    supabase.table("lindex_documents").update({
+                    self.supabase.table("lindex_documents").update({
                         "processing_status": "completed",
                         "in_vector_store": True,
                         "last_processed": datetime.now().isoformat(),
                         "source_type": source_type,
                         "doc_size": doc_size,
-                        "chunk_count": chunk_count
+                        "chunk_count": chunk_count,
+                        "user_id": user_id
                     }).eq("id", docid).execute()
                     
-                    logger.info(f"✅ Successfully processed document {docid} into vector store")
+                    self.logger.info(f"✅ Successfully processed document {docid} into vector store")
                     
                 else:
                     error_msg = result.get('error', 'Unknown processing error')
-                    logger.error(f"❌ Vector processing failed for {docid}: {error_msg}")
+                    self.logger.error(f"❌ Vector processing failed for {docid}: {error_msg}")
                     
-                    supabase.table("lindex_documents").update({
+                    self.supabase.table("lindex_documents").update({
                         "processing_status": "error",
-                        "error_message": error_msg[:200]
+                        "error_message": error_msg[:200],
+                        "user_id": user_id
                     }).eq("id", docid).execute()
                     
             except Exception as processing_error:
                 error_msg = str(processing_error)
-                logger.error(f"❌ Exception during vector processing for {docid}: {error_msg}")
+                self.logger.error(f"❌ Exception during vector processing for {docid}: {error_msg}")
                 
                 # ✅ FIX: Special handling for Supabase client compatibility issues
                 if "SyncPostgrestClient" in error_msg or "http_client" in error_msg:
-                    logger.warning(f"⚠️ Supabase client compatibility issue for {docid} - marking as pending_processor")
-                    supabase.table("lindex_documents").update({
+                    self.logger.warning(f"⚠️ Supabase client compatibility issue for {docid} - marking as pending_processor")
+                    self.supabase.table("lindex_documents").update({
                         "processing_status": "pending_processor",
-                        "error_message": "Supabase client compatibility issue - needs processor update"
+                        "error_message": "Supabase client compatibility issue - needs processor update",
+                        "user_id": user_id
                     }).eq("id", docid).execute()
                 else:
-                    supabase.table("lindex_documents").update({
+                    self.supabase.table("lindex_documents").update({
                         "processing_status": "error", 
-                        "error_message": error_msg[:200]
+                        "error_message": error_msg[:200],
+                        "user_id": user_id
                     }).eq("id", docid).execute()
                 
         except Exception as e:
-            logger.exception(f"Background processing error for document {docid}: {str(e)}")
+            self.logger.exception(f"Background processing error for document {docid}: {str(e)}")
             
             try:
-                supabase.table("lindex_documents").update({
+                self.supabase.table("lindex_documents").update({
                     "processing_status": "error",
-                    "error_message": str(e)[:200]
+                    "error_message": str(e)[:200],
+                    "user_id": user_id
                 }).eq("id", docid).execute()
             except:
                 pass
@@ -2612,6 +3070,7 @@ class EnhancedRAGKnowledgeEnhancer:
                 'data_source_type': source_type
             }
             
+            
             # Insert using HTTP client (without .execute())
             http_response = self.supabase.table("lindex_documents").insert(doc_data)
             
@@ -2621,11 +3080,20 @@ class EnhancedRAGKnowledgeEnhancer:
                 
                 self.logger.info(f"    📄 Successfully inserted gap filler document:")
                 self.logger.info(f"       - ID: {doc_id}")
-                self.logger.info(f"       - Title ID: {title_id}")  # ✅ NEW: Log title_id
+                self.logger.info(f"       - Title ID: {title_id}")
                 self.logger.info(f"       - Title: {title[:50]}...")
                 self.logger.info(f"       - Source Type: {source_type}")
-                self.logger.info(f"       - Size: {doc_size} chars")
+                self.logger.info(f"       - Content Size: {doc_size} chars (Full article preserved)")
                 self.logger.info(f"       - User ID: {user_id}")
+                
+                # Validate content quality
+                quality = self._validate_content_quality(source)
+                if quality['is_substantial']:
+                    self.logger.info(f"       - Content Quality: EXCELLENT ({quality['quality_score']}/100)")
+                elif quality['content_length'] > 500:
+                    self.logger.info(f"       - Content Quality: GOOD ({quality['quality_score']}/100)")
+                else:
+                    self.logger.warning(f"       - Content Quality: LOW ({quality['quality_score']}/100) - May need review")
                 
                 return str(doc_id)
             else:
@@ -2642,23 +3110,57 @@ class EnhancedRAGKnowledgeEnhancer:
             return None
         
     def _format_source_content(self, source: Dict, source_type: str, research_results: Dict) -> str:
-        """Format source content for RAG storage with enhanced structure."""
+        """Format source content for RAG storage with full content preservation."""
         
         title = source.get('title', 'Untitled Source')
-        description = source.get('description', source.get('summary', ''))
+        
+        # Try multiple fields to get the full content
+        description = (
+            source.get('description', '') or 
+            source.get('summary', '') or 
+            source.get('content', '') or 
+            source.get('text', '') or 
+            source.get('body', '') or 
+            source.get('article', '') or 
+            ''
+        )
+        
         url = source.get('url', '')
         source_name = source.get('source', 'Unknown Source')
         
-        authors_section = ""
-        if source.get('authors'):
-            if isinstance(source['authors'], list):
-                authors_section = f"\n**Authors:** {', '.join(source['authors'])}"
-            else:
-                authors_section = f"\n**Authors:** {source['authors']}"
+        # If description is still empty, log a warning
+        if not description or len(description.strip()) < 50:
+            self.logger.warning(f"⚠️ WARNING: Very short or empty content for {title}")
+            self.logger.warning(f"   - Description: '{description}'")
+            self.logger.warning(f"   - All source fields: {source}")
         
+        # Extract authors - check multiple possible fields
+        authors_section = ""
+        authors = source.get('authors') or source.get('author') or source.get('author_name')
+        if authors:
+            if isinstance(authors, list):
+                authors_section = f"\n**Authors:** {', '.join(authors)}"
+            else:
+                authors_section = f"\n**Authors:** {authors}"
+        
+        # Extract published date - check multiple possible fields
         published_section = ""
-        if source.get('published'):
-            published_section = f"\n**Published:** {source['published']}"
+        published = source.get('published') or source.get('date') or source.get('publication_date')
+        if published:
+            published_section = f"\n**Published:** {published}"
+        
+        # Extract citations if available (from deep search sourcedAnswer)
+        citations_section = ""
+        citations = source.get('citations', [])
+        if citations:
+            citations_section = "\n**Citations & Sources:**"
+            for idx, citation in enumerate(citations[:5], 1):  # Limit to top 5 citations
+                cite_title = citation.get('title', citation.get('name', 'Untitled'))
+                cite_url = citation.get('url', citation.get('source_url', ''))
+                if cite_url:
+                    citations_section += f"\n{idx}. [{cite_title}]({cite_url})"
+            if len(citations) > 5:
+                citations_section += f"\n*...and {len(citations) - 5} more sources*"
         
         type_info = {
             'academic_papers': {
@@ -2699,20 +3201,27 @@ class EnhancedRAGKnowledgeEnhancer:
             'icon': '📄'
         })
         
-        content = f"""# {type_details['icon']} {title}
+        # Add search depth indicator for transparency
+        depth_indicator = ""
+        search_depth = source.get('search_depth', 'standard')
+        if search_depth == 'deep':
+            depth_indicator = "\n*[Deep Search Result - Comprehensive analysis with citations]*"
+        
+        # Content-first structure with full article content
+        content = f"""# {type_details['icon']} {title}{depth_indicator}
+
+## Full Article Content
+{description}
 
 ## Source Information
 **Source:** {source_name}  
 **Type:** {type_details['type_label']}  
-**URL:** {url}{authors_section}{published_section}
+**URL:** {url}{authors_section}{published_section}{citations_section}
 
 ## Research Context
 **Focus Keyword:** {research_results['focus_keyword']}  
 **Research Date:** {research_results['research_timestamp'][:10]}  
 **Auto-Generated:** Knowledge Gap Filler System
-
-## Content Summary
-{description}
 
 ## Research Value
 {type_details['context']} This source was automatically identified and collected to enhance content creation about "{research_results['focus_keyword']}" by providing additional authoritative information and perspectives.
@@ -2731,12 +3240,48 @@ This research material can be used to:
 *Source Type: {source_type} | Content Type: gap_filler*
 """
         
+        
         return content.strip()
+
+    def _validate_content_quality(self, source: Dict) -> Dict[str, Any]:
+        """Validate content is substantial and not truncated."""
+        content = source.get('description', '')
+        word_count = len(content.split()) if content else 0
+        
+        return {
+            'content_length': len(content),
+            'word_count': word_count,
+            'is_substantial': len(content) > 1000,
+            'has_structure': bool(re.search(r'[.!?]\s+[A-Z]', content)) if content else False,
+            'is_truncated': content.endswith('...') and len(content) < 2000,
+            'quality_score': min(100, len(content) // 50) if content else 0
+        }
 
     def _generate_document_title(self, source: Dict, source_type: str, index: int) -> str:
         """Generate a clear, descriptive title for the gap filler document."""
         
         original_title = source.get('title', 'Untitled Source')
+        
+        # Ensure we have a valid title
+        if not original_title or original_title.strip() == '' or original_title == 'Untitled Source':
+            # Try to generate a meaningful title from other fields
+            url = source.get('url', '')
+            description = source.get('description', '')
+            
+            if url and url != 'No URL':
+                # Extract domain from URL
+                try:
+                    from urllib.parse import urlparse
+                    parsed_url = urlparse(url)
+                    domain = parsed_url.netloc.replace('www.', '')
+                    original_title = f"Article from {domain}"
+                except:
+                    original_title = f"Research Source {index + 1}"
+            elif description and description != 'No description':
+                # Use first part of description
+                original_title = description[:50].strip() + "..." if len(description) > 50 else description.strip()
+            else:
+                original_title = f"Research Source {index + 1}"
         
         # Clean and truncate original title
         if original_title and len(original_title) > 100:
@@ -2811,7 +3356,7 @@ This research material can be used to:
     
     def _create_short_summary(self, source: Dict, content: str) -> str:
         """Create a short summary for the document."""
-        description = source.get('description', source.get('summary', ''))
+        description = source.get('description') or source.get('summary') or ''
         if description:
             summary = description[:200].strip()
             if len(description) > 200:
@@ -2822,9 +3367,9 @@ This research material can be used to:
     
     def _create_medium_summary(self, source: Dict, content: str) -> str:
         """Create a medium-length summary for the document."""
-        description = source.get('description', source.get('summary', ''))
-        title = source.get('title', 'Research Source')
-        source_name = source.get('source', 'Unknown Source')
+        description = source.get('description') or source.get('summary') or ''
+        title = source.get('title') or 'Research Source'
+        source_name = source.get('source') or 'Unknown Source'
         
         summary_parts = [
             f"Source: {title}",
@@ -2896,7 +3441,13 @@ class EnhancedKnowledgeGapFillerOrchestrator:
         
         # Initialize components with injected dependencies
         self.gap_analyzer = KnowledgeGapAnalyzer(self.supabase, llm_provider)
-        self.researcher = MultiSourceResearcher(self.supabase)
+        self.researcher = MultiSourceResearcher(self.supabase, llm_provider)
+        
+        # Create a custom document processor with HTTP client if needed
+        if document_processor and hasattr(document_processor, 'supabase_client'):
+            # Update the document processor to use HTTP client
+            document_processor.supabase_client = self.supabase
+        
         self.rag_enhancer = EnhancedRAGKnowledgeEnhancer(
             self.supabase, 
             document_processor,
@@ -2913,8 +3464,17 @@ class EnhancedKnowledgeGapFillerOrchestrator:
             self.logger.warning("   Documents will be added to lindex_documents but not processed into vector store")
     
     async def process_single_title_with_collection(self, title_id: str, collection_name: str = None, 
-                                                 merge_with_existing: bool = True, user_id: str = None):
-        """Process single title with collection control and user tracking."""
+                                                 merge_with_existing: bool = True, user_id: str = None,
+                                                 content_outline: str = None):
+        """Process single title with collection control and user tracking.
+        
+        Args:
+            title_id: ID of the title to process
+            collection_name: Optional collection name
+            merge_with_existing: Whether to merge with existing collection
+            user_id: User ID for tracking
+            content_outline: Optional content outline from frontend
+        """
         
         try:
             self.logger.info(f"🔍 Processing title {title_id} with collection control (user: {user_id})")
@@ -2927,8 +3487,8 @@ class EnhancedKnowledgeGapFillerOrchestrator:
             
             title_data = response.data[0]
             
-            # Analyze knowledge gap
-            gap = await self.gap_analyzer._analyze_single_title(title_data, user_id)
+            # Analyze knowledge gap with optional content_outline
+            gap = await self.gap_analyzer._analyze_single_title(title_data, user_id, content_outline)
             
             if not gap:
                 return {
@@ -3071,10 +3631,41 @@ def integrate_knowledge_gap_filler_http(app):
         else:
             logger.warning("⚠️ Document processing dependencies not found - using mock implementation")
         
-        # Add all routes
-        add_knowledge_gap_routes(app)
-        add_enhanced_routes(app)
-        add_gap_closure_routes(app)
+        # Add health check routes first
+        @app.route('/query_hybrid_enhanced/health', methods=['GET'])
+        def knowledge_gap_health_check():
+            return jsonify({"status": "healthy", "service": "knowledge_gap_system"})
+            
+        @app.route('/query_hybrid_enhanced/status', methods=['GET'])
+        def status_check():
+            return jsonify({"status": "running", "service": "knowledge_gap_system"})
+            
+        @app.route('/query_hybrid_enhanced/ping', methods=['GET'])
+        def ping_check():
+            return jsonify({"pong": True, "service": "knowledge_gap_system"})
+            
+        @app.route('/query_hybrid_enhanced/', methods=['GET'])
+        def root_check():
+            return jsonify({"message": "Knowledge Gap System API", "status": "running"})
+        
+        # Add all routes with error handling
+        try:
+            add_knowledge_gap_routes(app)
+            logger.info("✅ Knowledge gap routes added")
+        except Exception as e:
+            logger.error(f"❌ Failed to add knowledge gap routes: {e}")
+            
+        try:
+            add_enhanced_routes(app)
+            logger.info("✅ Enhanced routes added")
+        except Exception as e:
+            logger.error(f"❌ Failed to add enhanced routes: {e}")
+            
+        try:
+            add_gap_closure_routes(app)
+            logger.info("✅ Gap closure routes added")
+        except Exception as e:
+            logger.error(f"❌ Failed to add gap closure routes: {e}")
         
         logger.info("✅ Enhanced Knowledge Gap Filler integrated successfully!")
         logger.info("📋 Available endpoints:")
@@ -3218,10 +3809,11 @@ def add_enhanced_routes(app):
 
     @app.route('/bulk_enhance_knowledge', methods=['POST'])
     def bulk_enhance_knowledge():
-        """Bulk enhance knowledge for multiple titles"""
+        """Bulk enhance knowledge for multiple titles with optional content_outlines"""
         try:
             data = request.get_json() or {}
             title_ids = data.get('title_ids', [])
+            content_outlines = data.get('content_outlines', {})  # New: dict of {title_id: outline}
             user_id = data.get('user_id')
             max_concurrent = data.get('max_concurrent', 3)
             merge_with_existing = data.get('merge_with_existing', True)
@@ -3231,6 +3823,8 @@ def add_enhanced_routes(app):
                 return jsonify({"status": "error", "error": "No title_ids provided"}), 400
             
             logger.info(f"🔄 Bulk enhancing {len(title_ids)} titles (user: {user_id})")
+            if content_outlines:
+                logger.info(f"📋 Received content_outlines for {len(content_outlines)} titles")
             
             orchestrator = get_orchestrator()
             
@@ -3243,9 +3837,12 @@ def add_enhanced_routes(app):
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     
+                    # Get content_outline for this specific title (if provided)
+                    outline = content_outlines.get(title_id) if content_outlines else None
+                    
                     result = loop.run_until_complete(
                         orchestrator.process_single_title_with_collection(
-                            title_id, collection_name, merge_with_existing, user_id
+                            title_id, collection_name, merge_with_existing, user_id, outline
                         )
                     )
                     
@@ -3606,6 +4203,7 @@ def add_gap_closure_routes(app):
             data = request.get_json() or {}
             user_id = data.get('user_id')
             title_ids = data.get('title_ids', [])
+            content_outlines = data.get('content_outlines', {})  # New: dict of {title_id: outline}
             collection_name = data.get('collection_name')
             research_depth = data.get('research_depth', 'standard')
             source_types = data.get('source_types', ['all'])
@@ -3622,6 +4220,8 @@ def add_gap_closure_routes(app):
             logger.info(f"🔍 Bulk additional knowledge enhancement for {len(title_ids)} titles")
             logger.info(f"   Research depth: {research_depth}")
             logger.info(f"   User: {user_id}")  # Confirm user_id logging
+            if content_outlines:
+                logger.info(f"📋 Received content_outlines for {len(content_outlines)} titles")
             
             # ✅ Create HTTP client
             http_supabase = HTTPSupabaseClient()
@@ -3686,7 +4286,10 @@ def add_gap_closure_routes(app):
                                 if doc.get('url')
                             }
                     
-                    # ✅ CRITICAL: Ensure user_id is passed to enhance_additional_knowledge
+                    # Get content_outline for this specific title (if provided)
+                    outline = content_outlines.get(title_id) if content_outlines else None
+                    
+                    # ✅ CRITICAL: Ensure user_id and content_outline are passed to enhance_additional_knowledge
                     enhancement_result = run_async_task(
                         gap_orchestrator.enhance_additional_knowledge(
                             title_id=title_id,
@@ -3694,7 +4297,8 @@ def add_gap_closure_routes(app):
                             collection_name=collection_name,
                             research_depth=research_depth,
                             existing_urls=existing_urls,
-                            source_types=source_types
+                            source_types=source_types,
+                            content_outline=outline  # ✅ Pass content_outline
                         )
                     )
                     

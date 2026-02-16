@@ -29,9 +29,11 @@ def check_endpoint(endpoint):
 def main():
     print(f"🚀 Verifying deployment at {BASE_URL}")
     print("=" * 50)
+    # Context: Switched to internal port 80 to align with Coolify defaults
     
     endpoints = [
         "/",  # Root might show status or 404 depending on app
+        "/health",  # Unconditional health check
         "/query_hybrid_enhanced/health",
         "/query_hybrid_enhanced/status", 
         "/query_hybrid_enhanced/ping",

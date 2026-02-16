@@ -1,0 +1,494 @@
+// ENHANCED: Noodl application with balance emphasis support
+// Now includes configurable document prioritization between books and articles
+//
+// BALANCE EMPHASIS OPTIONS:
+// - 'news_focused': Prioritizes recent articles and news (best for current events)
+// - 'balanced': Moderate balance between all content types (default for general queries)
+// - 'comprehensive': Prioritizes books and long documents (best for detailed research)
+// - 'auto': System automatically detects query type and chooses appropriate balance
+//
+// USAGE: Set Inputs.balance_emphasis to one of the above values, or leave undefined for auto-detection
+
+const method = Inputs.method;
+const simple = Inputs.simple;
+const query_agentic_fixed = Inputs.query_agentic_fixed;
+const truly_agentic = Inputs.truly_agentic;
+const hybrid_enhanced = Inputs.hybrid_enhanced;
+const agentic_iterative = Inputs.agentic_iterative;
+const llm = Inputs.llm || 'deepseek';
+const balance_emphasis = Inputs.balance_emphasis; // New: balance emphasis control
+
+async function callWithJobPolling() {
+    try {
+        Outputs.success = false;
+        Outputs.status = "Starting async query...";
+        Outputs.phase = "initialization";
+        
+        const query = Inputs.query?.trim() || "";
+        const selectedCollectionId = Inputs.collectionId;
+        const collections = Inputs.allCollections || [];
+        
+        const selectedCollection = collections.find(collection =>
+            collection.Value === selectedCollectionId
+        );
+        
+        if (!selectedCollection) {
+            throw new Error("No collection selected or collection not found");
+        }
+        
+        const collection_name = selectedCollection.Label;
+        
+        // Request body setup
+        let requestBody = {
+            collection_name: collection_name,
+            query: query,
+            llm: llm
+        };
+        
+        // Add balance emphasis if provided
+        if (balance_emphasis && balance_emphasis !== 'auto') {
+            requestBody.balance_emphasis = balance_emphasis;
+            console.log(`🎯 Using balance emphasis: ${balance_emphasis}`);
+        } else {
+            console.log("🔄 Using auto-detection for balance emphasis");
+        }
+        
+        if (simple) {
+            requestBody.method = 'simple';
+            requestBody.num_results = 5;
+            console.log("🔍 Using simple method");
+            
+        } else if (query_agentic_fixed) {
+            requestBody.method = 'agentic_fixed';
+            requestBody.max_docs = 3;
+            requestBody.verbose_mode = "balanced";
+            console.log("🤖 Using agentic_fixed method");
+            
+        } else if (truly_agentic) {
+            requestBody.method = 'truly_agentic';
+            console.log("🧠 Using truly_agentic method");
+            
+        } else if (hybrid_enhanced) {
+            requestBody.method = 'hybrid_enhanced';
+            requestBody.top_k = 10;
+            console.log("🔄 Using hybrid_enhanced method");
+            
+        } else if (agentic_iterative) {
+            requestBody.method = 'agentic_iterative';
+            requestBody.max_iterations = 3;
+            console.log("🔁 Using agentic_iterative method");
+            
+        } else {
+            requestBody.method = 'simple';
+            requestBody.num_results = 5;
+            console.log("📝 Using default simple method");
+        }
+
+        console.log("📤 Request body:", requestBody);
+        
+        // Step 1: Start async job
+        const startResponse = await fetch('http://127.0.0.1:8080/query_async', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
+        
+        if (!startResponse.ok) {
+            const errorText = await startResponse.text();
+            throw new Error(`Failed to start query: ${startResponse.statusText} - ${errorText}`);
+        }
+        
+        const startData = await startResponse.json();
+        const job_id = startData.job_id;
+        
+        if (!job_id) {
+            throw new Error("No job ID returned from server");
+        }
+        
+        console.log("✅ Started job:", job_id);
+        
+        // Initialize outputs
+        Outputs.jobId = job_id;
+        Outputs.searchStrategy = requestBody.method;
+        Outputs.llmProvider = 'gemini';
+        Outputs.balanceEmphasis = balance_emphasis || 'auto'; // Track balance emphasis used
+        
+        // Step 2: Enhanced polling with detailed status
+        let completed = false;
+        let pollCount = 0;
+        const maxPolls = 60;
+        
+        while (!completed && pollCount < maxPolls) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            pollCount++;
+            
+            const statusResponse = await fetch(`http://127.0.0.1:8080/job_status/${job_id}`);
+            if (!statusResponse.ok) {
+                throw new Error(`Failed to get job status: ${statusResponse.statusText}`);
+            }
+            
+            const statusData = await statusResponse.json();
+            
+            // Status outputs
+            Outputs.status = statusData.current_step || statusData.status || "Processing...";
+            Outputs.progress = (statusData.progress || 0);
+            Outputs.progressText = `${statusData.progress || 0}%`;
+            Outputs.phase = statusData.phase || "unknown";
+            
+            // Search info outputs
+            if (statusData.search_info) {
+                const searchInfo = statusData.search_info;
+                
+                Outputs.searchStrategy = searchInfo.strategy || requestBody.method;
+                Outputs.llmProvider = searchInfo.llm_provider || 'gemini';
+                Outputs.embeddingDimension = searchInfo.embedding_dimension || 1536;
+                Outputs.currentDocument = searchInfo.current_document || "";
+                Outputs.chunksProcessed = searchInfo.chunks_processed || 0;
+                Outputs.searchIterations = searchInfo.search_iterations || 0;
+                Outputs.maxIterations = searchInfo.max_iterations || 0;
+                Outputs.resultsQuality = searchInfo.results_quality || "unknown";
+                
+                // Documents being searched
+                if (searchInfo.documents_being_searched && searchInfo.documents_being_searched.length > 0) {
+                    Outputs.documentsBeingSearched = searchInfo.documents_being_searched;
+                    Outputs.documentsBeingSearchedText = "Searching: " + searchInfo.documents_being_searched.join(', ');
+                    Outputs.documentsBeingSearchedCount = searchInfo.documents_being_searched.length;
+                } else {
+                    Outputs.documentsBeingSearched = [];
+                    Outputs.documentsBeingSearchedText = "No documents selected yet";
+                    Outputs.documentsBeingSearchedCount = 0;
+                }
+                
+                // Iteration progress
+                if (searchInfo.search_iterations > 0 && searchInfo.max_iterations > 0) {
+                    Outputs.iterationProgress = `${searchInfo.search_iterations}/${searchInfo.max_iterations}`;
+                    Outputs.iterationPercentage = Math.round((searchInfo.search_iterations / searchInfo.max_iterations) * 100);
+                } else {
+                    Outputs.iterationProgress = "";
+                    Outputs.iterationPercentage = 0;
+                }
+            }
+            
+            // Recent steps
+            if (statusData.steps && statusData.steps.length > 0) {
+                Outputs.recentSteps = statusData.steps;
+                Outputs.recentStepsText = statusData.steps.join('\n');
+            }
+            
+            console.log(`🔄 Poll ${pollCount}: ${statusData.status} (${statusData.progress}%) - ${statusData.phase}`);
+            
+            if (statusData.status === 'completed') {
+                const result = statusData.result;
+                
+                if (!result) {
+                    throw new Error("Completed job returned no result data");
+                }
+                
+                // ✅ CRITICAL FIX: Extract searchQuality FIRST from API result
+                console.log("🔍 RAW API RESULT:", JSON.stringify(result, null, 2));
+                
+                // Get the actual searchQuality from the API result
+                const apiSearchQuality = result.searchQuality;
+                console.log(`🎯 API returned searchQuality: "${apiSearchQuality}"`);
+                
+                // Basic outputs
+                Outputs.Response = result.response || "No response content";
+                Outputs.success = true;
+                Outputs.status = "✅ Query Complete!";
+                Outputs.phase = "completed";
+                
+                // Metadata outputs
+                Outputs.method = result.method || requestBody.method;
+                Outputs.timeSeconds = result.time_seconds || result.total_time_seconds || 0;
+                Outputs.chunksUsed = result.chunks_used || 0;
+                Outputs.documentsSearched = result.documents_searched || 0;
+                Outputs.embeddingDimension = result.embedding_dimension || 1536;
+                
+                // Document tracking
+                Outputs.documentsUsed = result.documents_used || [];
+                Outputs.documentSummary = result.document_summary || {};
+                Outputs.sourceAttribution = result.source_attribution || [];
+                Outputs.documentTitles = result.document_titles || {};
+                
+                // ✅ CRITICAL FIX: Use API searchQuality FIRST, fallback logic only if missing
+                if (apiSearchQuality && ['basic', 'advanced', 'premium'].includes(apiSearchQuality)) {
+                    // Use the actual API searchQuality - this is the correct value
+                    Outputs.searchQuality = apiSearchQuality;
+                    console.log(`✅ Using API searchQuality: "${apiSearchQuality}"`);
+                    
+                } else {
+                    // Only use fallback logic if API didn't return a valid searchQuality
+                    console.log(`⚠️ API searchQuality invalid/missing: "${apiSearchQuality}", using fallback logic`);
+                    
+                    // Enhanced document analysis with FALLBACK logic only
+                    if (result.documents_used && result.documents_used.length > 0) {
+                        const docsWithChunks = result.documents_used.filter(doc => 
+                            (doc.chunks_contributed && doc.chunks_contributed > 0) ||
+                            (doc.characters_retrieved && doc.characters_retrieved > 0)
+                        );
+                        
+                        const totalChunks = docsWithChunks.reduce((sum, doc) => sum + (doc.chunks_contributed || 0), 0);
+                        const avgChunksPerDoc = totalChunks / docsWithChunks.length;
+                        
+                        // Fallback quality assessment based on chunk analysis
+                        if (totalChunks > 30 && avgChunksPerDoc > 10) {
+                            Outputs.searchQuality = "excellent";
+                        } else if (totalChunks > 15 && avgChunksPerDoc > 5) {
+                            Outputs.searchQuality = "good";
+                        } else {
+                            Outputs.searchQuality = "basic";
+                        }
+                        
+                        console.log(`🔧 Fallback searchQuality: "${Outputs.searchQuality}" (${totalChunks} chunks, ${avgChunksPerDoc.toFixed(1)} avg)`);
+                        
+                    } else if (Outputs.chunksUsed > 0) {
+                        // Simple fallback based on chunk count
+                        Outputs.searchQuality = Outputs.chunksUsed > 15 ? "good" : Outputs.chunksUsed > 8 ? "basic" : "limited";
+                        console.log(`🔧 Simple fallback searchQuality: "${Outputs.searchQuality}" (${Outputs.chunksUsed} chunks)`);
+                    } else {
+                        Outputs.searchQuality = "none";
+                        console.log(`🔧 No chunks fallback: "none"`);
+                    }
+                }
+                
+                // ✅ DOCUMENT ANALYSIS (but don't override searchQuality)
+                if (result.documents_used && result.documents_used.length > 0) {
+                    const docsWithChunks = result.documents_used.filter(doc => 
+                        (doc.chunks_contributed && doc.chunks_contributed > 0) ||
+                        (doc.characters_retrieved && doc.characters_retrieved > 0)
+                    );
+                    
+                    Outputs.documentsWithChunks = docsWithChunks.length;
+                    
+                    // Create detailed document breakdown
+                    const docBreakdown = docsWithChunks.map(doc => {
+                        const title = doc.title || doc.doc_title || 
+                                    result.document_titles?.[doc.document_id] || 
+                                    result.document_titles?.[doc.doc_id] || 
+                                    `Document ${doc.document_id || doc.doc_id}`;
+                        const chunks = doc.chunks_contributed || 0;
+                        const chars = doc.characters_retrieved || 0;
+                        const status = doc.status || 'used';
+                        
+                        return {
+                            id: doc.document_id || doc.doc_id,
+                            title: title,
+                            chunks: chunks,
+                            characters: chars,
+                            status: status,
+                            summary: `${title}: ${chunks} chunks${chars > 0 ? `, ${chars} chars` : ''}`
+                        };
+                    });
+                    
+                    Outputs.documentBreakdown = docBreakdown;
+                    Outputs.documentUsageText = "Sources: " + docBreakdown.map(doc => doc.summary).join('; ');
+                    Outputs.documentTitlesList = docBreakdown.map(doc => doc.title).join(', ');
+                    
+                    const totalChunks = docBreakdown.reduce((sum, doc) => sum + doc.chunks, 0);
+                    const avgChunksPerDoc = totalChunks / docsWithChunks.length;
+                    Outputs.averageChunksPerDocument = Math.round(avgChunksPerDoc * 10) / 10;
+                    
+                } else if (Outputs.chunksUsed > 0) {
+                    // Fallback estimation
+                    const estimatedDocsUsed = Math.max(1, Math.min(Outputs.documentsSearched || 1, Math.ceil(Outputs.chunksUsed / 3)));
+                    Outputs.documentsWithChunks = estimatedDocsUsed;
+                    
+                    if (Outputs.sourceAttribution && Outputs.sourceAttribution.length > 0) {
+                        const sourceTitles = Outputs.sourceAttribution.map(source => {
+                            const match = source.match(/^(.*?):\s*\d+\s*chunks?/);
+                            return match ? match[1] : source;
+                        });
+                        Outputs.documentTitlesList = sourceTitles.join(', ');
+                        Outputs.documentUsageText = `${Outputs.chunksUsed} chunks from: ${Outputs.sourceAttribution.join('; ')}`;
+                    } else {
+                        Outputs.documentTitlesList = `${estimatedDocsUsed} documents`;
+                        Outputs.documentUsageText = `${Outputs.chunksUsed} chunks from ${estimatedDocsUsed} documents`;
+                    }
+                    
+                    Outputs.averageChunksPerDocument = Math.round((Outputs.chunksUsed / estimatedDocsUsed) * 10) / 10;
+                    Outputs.documentBreakdown = [];
+                    
+                } else {
+                    // No chunks found
+                    Outputs.documentsWithChunks = 0;
+                    Outputs.documentUsageText = "No documents contributed chunks";
+                    Outputs.documentTitlesList = "No documents used";
+                    Outputs.documentBreakdown = [];
+                    Outputs.averageChunksPerDocument = 0;
+                }
+                
+                // Final summary outputs
+                Outputs.completionSummary = {
+                    method: Outputs.method,
+                    timeSeconds: Outputs.timeSeconds,
+                    chunksUsed: Outputs.chunksUsed,
+                    documentsSearched: Outputs.documentsSearched,
+                    documentsWithChunks: Outputs.documentsWithChunks,
+                    quality: Outputs.searchQuality,  // This is now the correct API value
+                    embeddingDimension: Outputs.embeddingDimension,
+                    balanceEmphasis: Outputs.balanceEmphasis  // Include balance emphasis in summary
+                };
+                
+                Outputs.completionText = `Completed ${Outputs.method} search in ${Outputs.timeSeconds}s using ${Outputs.chunksUsed} chunks from ${Outputs.documentsWithChunks} documents (${Outputs.searchQuality} quality, ${Outputs.balanceEmphasis} balance)`;
+                
+                // ✅ ENHANCED LOGGING with correct searchQuality and balance emphasis
+                console.log(`✅ Query completed (${requestBody.method}):`);
+                console.log(`   🎯 SearchQuality: ${Outputs.searchQuality} (from API: "${apiSearchQuality}")`);
+                console.log(`   ⚖️ Balance Emphasis: ${Outputs.balanceEmphasis}`);
+                console.log(`   📊 ${Outputs.chunksUsed} chunks from ${Outputs.documentsSearched} searched docs (${Outputs.documentsWithChunks} contributed)`);
+                console.log(`   📚 Documents: ${Outputs.documentUsageText}`);
+                console.log(`   ⏱️ Time: ${Outputs.timeSeconds}s`);
+                console.log(`   📈 Quality: ${Outputs.searchQuality} (avg ${Outputs.averageChunksPerDocument} chunks/doc)`);
+                
+                // Detailed document breakdown logging
+                if (Outputs.documentBreakdown && Outputs.documentBreakdown.length > 0) {
+                    console.log(`📋 Document breakdown:`);
+                    Outputs.documentBreakdown.forEach(doc => {
+                        console.log(`   • ${doc.title}: ${doc.chunks} chunks, ${doc.characters} chars`);
+                    });
+                }
+                
+                // Source attribution logging
+                if (Outputs.sourceAttribution && Outputs.sourceAttribution.length > 0) {
+                    console.log(`📚 Source attribution:`);
+                    Outputs.sourceAttribution.forEach(source => {
+                        console.log(`   • ${source}`);
+                    });
+                }
+                
+                completed = true;
+                
+            } else if (statusData.status === 'failed') {
+                const errorMessage = statusData.error || "Job failed with unknown error";
+                throw new Error(errorMessage);
+            }
+            
+            if (!completed) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+        }
+        
+        if (!completed) {
+            throw new Error("Query timed out after 2 minutes");
+        }
+        
+    } catch (error) {
+        console.error("❌ Polling query failed:", error);
+        Outputs.error = error.message;
+        Outputs.Response = `Error: ${error.message}`;
+        Outputs.success = false;
+        Outputs.status = `❌ Error: ${error.message}`;
+        Outputs.phase = "failed";
+        Outputs.searchQuality = "failed";
+        
+        // Clear outputs on error
+        Outputs.documentsUsed = [];
+        Outputs.documentUsageText = "";
+        Outputs.sourceAttribution = [];
+        Outputs.documentsWithChunks = 0;
+        Outputs.documentBreakdown = [];
+        Outputs.documentTitlesList = "";
+        Outputs.documentsBeingSearched = [];
+        Outputs.currentDocument = "";
+        Outputs.iterationProgress = "";
+        Outputs.completionSummary = {};
+        Outputs.completionText = "";
+    }
+}
+
+async function main() {
+    // Initialize all outputs
+    Outputs.Response = "";
+    Outputs.status = "Initializing...";
+    Outputs.phase = "initialization";
+    Outputs.progress = 0;
+    Outputs.progressText = "0%";
+    Outputs.searchQuality = "unknown";  // Initialize properly
+    
+    // Initialize enhanced status outputs
+    Outputs.jobId = "";
+    Outputs.searchStrategy = "";
+    Outputs.llmProvider = "";
+    Outputs.embeddingDimension = 0;
+    Outputs.currentDocument = "";
+    Outputs.chunksProcessed = 0;
+    Outputs.searchIterations = 0;
+    Outputs.maxIterations = 0;
+    Outputs.resultsQuality = "unknown";
+    Outputs.iterationProgress = "";
+    Outputs.iterationPercentage = 0;
+    
+    // Initialize document tracking outputs
+    Outputs.documentsUsed = [];
+    Outputs.documentSummary = {};
+    Outputs.sourceAttribution = [];
+    Outputs.documentTitles = {};
+    Outputs.documentUsageText = "";
+    Outputs.documentsWithChunks = 0;
+    Outputs.documentBreakdown = [];
+    Outputs.documentTitlesList = "";
+    Outputs.averageChunksPerDocument = 0;
+    
+    // Initialize documents being searched
+    Outputs.documentsBeingSearched = [];
+    Outputs.documentsBeingSearchedText = "";
+    Outputs.documentsBeingSearchedCount = 0;
+    
+    // Initialize step tracking
+    Outputs.recentSteps = [];
+    Outputs.recentStepsText = "";
+    
+    // Initialize completion summary
+    Outputs.completionSummary = {};
+    Outputs.completionText = "";
+    
+    // Initialize balance emphasis tracking
+    Outputs.balanceEmphasis = balance_emphasis || 'auto';
+    
+    try {
+        await callWithJobPolling();
+        console.log("🎉 API call completed!");
+        
+        if (Outputs.success) {
+            console.log("✅ Success! Response preview:", Outputs.Response?.substring(0, 100) + "...");
+            console.log("🎯 Final searchQuality:", Outputs.searchQuality);
+            
+            if (Outputs.documentTitlesList) {
+                console.log("📚 Documents used:", Outputs.documentTitlesList);
+            }
+            
+            if (Outputs.sourceAttribution && Outputs.sourceAttribution.length > 0) {
+                console.log("🔗 Source attribution:");
+                Outputs.sourceAttribution.forEach(source => console.log(`   • ${source}`));
+            }
+            
+            console.log("📊 Final metrics:", Outputs.completionText);
+            
+            // Log balance emphasis effect
+            if (Outputs.documentBreakdown && Outputs.documentBreakdown.length > 0) {
+                const docTypes = {};
+                Outputs.documentBreakdown.forEach(doc => {
+                    const docType = doc.title.toLowerCase().includes('book') ? 'book' : 
+                                   doc.title.toLowerCase().includes('article') ? 'article' :
+                                   doc.title.toLowerCase().includes('news') ? 'news' : 'document';
+                    docTypes[docType] = (docTypes[docType] || 0) + 1;
+                });
+                console.log(`⚖️ Balance effect (${Outputs.balanceEmphasis}):`, docTypes);
+            }
+            
+        } else {
+            console.error("❌ API failed:", Outputs.error);
+        }
+    } catch (err) {
+        console.error("❌ Execution failed:", err);
+        Outputs.Response = "Execution Error: " + err.message;
+        Outputs.success = false;
+        Outputs.status = "❌ Execution Error";
+        Outputs.phase = "failed";
+        Outputs.error = err.message;
+        Outputs.searchQuality = "failed";
+    }
+}
+
+// Run the main function
+main();

@@ -28,9 +28,10 @@ class ActionPriority(Enum):
 class ManualActionSuggestionsGenerator:
     """Generates manual action suggestions that require human intervention"""
     
-    def __init__(self, supabase_client):
+    def __init__(self, supabase_client, linkup_client=None):
         self.supabase = supabase_client
         self.logger = logging.getLogger(__name__)
+        self.linkup_client = linkup_client
         
         # Suggestion templates by topic category
         self.suggestion_templates = {
@@ -177,9 +178,17 @@ class ManualActionSuggestionsGenerator:
                 manus_suggestions = await self.suggest_manus_wide_research(gap, research_results)
                 suggestions.extend(manus_suggestions)
             
-            # Generate other types of suggestions
-            suggestions.extend(await self._suggest_textbooks(gap, research_results))
-            suggestions.extend(await self._suggest_datasets(gap, research_results))
+            # Use Linkup to find sources not readily available online
+            if self.linkup_client:
+                linkup_suggestions = await self._suggest_from_linkup(gap, research_results)
+                suggestions.extend(linkup_suggestions)
+            else:
+                # Fallback to template-based suggestions if Linkup not available
+                self.logger.warning("Linkup client not available - using template-based suggestions")
+                suggestions.extend(await self._suggest_textbooks(gap, research_results))
+                suggestions.extend(await self._suggest_datasets(gap, research_results))
+            
+            # Generate other types of suggestions (tools, interviews, templates)
             suggestions.extend(await self._suggest_tool_development(gap, research_results))
             suggestions.extend(await self._suggest_expert_interviews(gap, research_results))
             suggestions.extend(await self._suggest_templates_and_resources(gap, research_results))
@@ -191,6 +200,312 @@ class ManualActionSuggestionsGenerator:
             
         except Exception as e:
             self.logger.error(f"Error generating action suggestions: {e}")
+            return []
+    
+    async def _suggest_from_linkup(self, gap, research_results: Dict) -> List[Dict]:
+        """Use Linkup to find books, articles, datasets, and other sources not readily available online"""
+        
+        suggestions = []
+        focus_keyword = gap.focus_keyword
+        topic_category = gap.topic_category
+        
+        try:
+            # Check what sources were already found
+            sources_found = research_results.get('sources_found', {})
+            total_sources = research_results.get('total_sources', 0)
+            research_quality = research_results.get('research_quality_score', 0)
+            
+            # Only suggest if research quality is low or specific data types are missing
+            if research_quality >= 70 and total_sources >= 10:
+                self.logger.info(f"Research quality good ({research_quality}), skipping Linkup suggestions")
+                return suggestions
+            
+            # Search for books and textbooks
+            book_suggestions = await self._find_books_via_linkup(focus_keyword, topic_category, gap)
+            suggestions.extend(book_suggestions)
+            
+            # Search for academic papers and research studies
+            academic_suggestions = await self._find_academic_sources_via_linkup(focus_keyword, topic_category, gap, sources_found)
+            suggestions.extend(academic_suggestions)
+            
+            # Search for specialized datasets
+            dataset_suggestions = await self._find_datasets_via_linkup(focus_keyword, topic_category, gap, sources_found)
+            suggestions.extend(dataset_suggestions)
+            
+            # Search for industry reports and market research
+            report_suggestions = await self._find_industry_reports_via_linkup(focus_keyword, topic_category, gap, sources_found)
+            suggestions.extend(report_suggestions)
+            
+            self.logger.info(f"✅ Generated {len(suggestions)} Linkup-based suggestions for {focus_keyword}")
+            
+        except Exception as e:
+            self.logger.error(f"Error generating Linkup suggestions: {e}")
+        
+        return suggestions
+    
+    async def _find_books_via_linkup(self, focus_keyword: str, topic_category: str, gap) -> List[Dict]:
+        """Use Linkup to find relevant books and textbooks"""
+        
+        suggestions = []
+        
+        try:
+            # Search for books on the topic
+            book_queries = [
+                f"{focus_keyword} textbook comprehensive guide",
+                f"{focus_keyword} book reference manual",
+                f"best books about {focus_keyword}"
+            ]
+            
+            for query in book_queries[:2]:  # Limit to 2 queries to control costs
+                results = await self._linkup_search_safe(query, max_results=3)
+                
+                for result in results:
+                    title = result.get('title', '')
+                    url = result.get('url', '')
+                    description = result.get('description', result.get('summary', ''))
+                    
+                    # Filter for book-related sources (Amazon, Goodreads, publisher sites, etc.)
+                    if any(indicator in url.lower() for indicator in ['amazon', 'goodreads', 'publisher', 'book', 'textbook', 'library']):
+                        # Extract book title and author if possible
+                        resource_name = title
+                        if 'author' in result:
+                            resource_name = f"{title} by {result.get('author')}"
+                        
+                        suggestions.append({
+                            'action_type': ActionType.TEXTBOOK.value,
+                            'title': f"Read: {title}",
+                            'description': f"Comprehensive book covering {focus_keyword}. {description[:200] if description else 'Found via Linkup research.'}",
+                            'resource_name': resource_name,
+                            'estimated_effort_hours': 20,
+                            'difficulty_level': 'intermediate',
+                            'expected_benefit': f"Deep understanding of {focus_keyword} from authoritative source",
+                            'cost_estimate': '$30-80',
+                            'implementation_notes': f"Purchase or borrow from library. URL: {url}",
+                            'content_enhancement_potential': 'Provides authoritative quotes, frameworks, and structured approaches to the topic',
+                            'linkup_source': url,
+                            'linkup_title': title
+                        })
+                        
+                        if len(suggestions) >= 3:  # Limit to 3 book suggestions
+                            break
+                
+                if len(suggestions) >= 3:
+                    break
+                    
+        except Exception as e:
+            self.logger.error(f"Error finding books via Linkup: {e}")
+        
+        return suggestions
+    
+    async def _find_academic_sources_via_linkup(self, focus_keyword: str, topic_category: str, gap, sources_found: Dict) -> List[Dict]:
+        """Use Linkup to find academic papers and research studies"""
+        
+        suggestions = []
+        
+        # Skip if academic papers were already found
+        if 'academic_papers' in sources_found and len(sources_found.get('academic_papers', [])) >= 3:
+            return suggestions
+        
+        try:
+            academic_queries = [
+                f"{focus_keyword} research study academic paper",
+                f"{focus_keyword} peer-reviewed journal article",
+                f"{focus_keyword} scholarly research"
+            ]
+            
+            for query in academic_queries[:2]:  # Limit queries
+                results = await self._linkup_search_safe(query, max_results=3)
+                
+                for result in results:
+                    title = result.get('title', '')
+                    url = result.get('url', '')
+                    description = result.get('description', result.get('summary', ''))
+                    
+                    # Filter for academic sources
+                    if any(indicator in url.lower() for indicator in ['pubmed', 'arxiv', 'scholar', 'jstor', 'researchgate', 'academia', 'edu', 'journal']):
+                        suggestions.append({
+                            'action_type': ActionType.RESEARCH_STUDY.value,
+                            'title': f"Research study: {title}",
+                            'description': f"Academic research paper on {focus_keyword}. {description[:200] if description else 'Found via Linkup research.'}",
+                            'resource_name': title,
+                            'estimated_effort_hours': 4,
+                            'difficulty_level': 'intermediate',
+                            'expected_benefit': f"Peer-reviewed research and data on {focus_keyword}",
+                            'cost_estimate': '$0-50',
+                            'implementation_notes': f"Access via academic database or library. URL: {url}",
+                            'content_enhancement_potential': 'Adds academic credibility and research-backed insights',
+                            'linkup_source': url,
+                            'linkup_title': title
+                        })
+                        
+                        if len(suggestions) >= 2:  # Limit to 2 academic suggestions
+                            break
+                
+                if len(suggestions) >= 2:
+                    break
+                    
+        except Exception as e:
+            self.logger.error(f"Error finding academic sources via Linkup: {e}")
+        
+        return suggestions
+    
+    async def _find_datasets_via_linkup(self, focus_keyword: str, topic_category: str, gap, sources_found: Dict) -> List[Dict]:
+        """Use Linkup to find specialized datasets"""
+        
+        suggestions = []
+        
+        # Skip if statistical data was already found
+        if 'statistical_data' in sources_found and len(sources_found.get('statistical_data', [])) >= 3:
+            return suggestions
+        
+        try:
+            dataset_queries = [
+                f"{focus_keyword} dataset download data",
+                f"{focus_keyword} statistics database",
+                f"{focus_keyword} data source CSV"
+            ]
+            
+            for query in dataset_queries[:2]:  # Limit queries
+                results = await self._linkup_search_safe(query, max_results=3)
+                
+                for result in results:
+                    title = result.get('title', '')
+                    url = result.get('url', '')
+                    description = result.get('description', result.get('summary', ''))
+                    
+                    # Filter for dataset sources
+                    if any(indicator in url.lower() or indicator in title.lower() for indicator in ['dataset', 'data', 'csv', 'database', 'kaggle', 'data.gov', 'statistics']):
+                        suggestions.append({
+                            'action_type': ActionType.DATASET.value,
+                            'title': f"Dataset: {title}",
+                            'description': f"Specialized dataset for {focus_keyword}. {description[:200] if description else 'Found via Linkup research.'}",
+                            'resource_name': title,
+                            'estimated_effort_hours': 8,
+                            'difficulty_level': 'intermediate',
+                            'expected_benefit': f"Data-driven insights and statistics for {focus_keyword}",
+                            'cost_estimate': '$0-500',
+                            'implementation_notes': f"Download and analyze dataset. URL: {url}",
+                            'content_enhancement_potential': 'Provides exclusive statistics and data visualizations',
+                            'linkup_source': url,
+                            'linkup_title': title
+                        })
+                        
+                        if len(suggestions) >= 2:  # Limit to 2 dataset suggestions
+                            break
+                
+                if len(suggestions) >= 2:
+                    break
+                    
+        except Exception as e:
+            self.logger.error(f"Error finding datasets via Linkup: {e}")
+        
+        return suggestions
+    
+    async def _find_industry_reports_via_linkup(self, focus_keyword: str, topic_category: str, gap, sources_found: Dict) -> List[Dict]:
+        """Use Linkup to find industry reports and market research"""
+        
+        suggestions = []
+        
+        # Only suggest for professional/entrepreneur audience
+        if gap.target_audience not in ['professional', 'entrepreneur']:
+            return suggestions
+        
+        # Skip if industry reports were already found
+        if 'industry_reports' in sources_found and len(sources_found.get('industry_reports', [])) >= 3:
+            return suggestions
+        
+        try:
+            report_queries = [
+                f"{focus_keyword} industry report market research",
+                f"{focus_keyword} market analysis report",
+                f"{focus_keyword} industry benchmark study"
+            ]
+            
+            for query in report_queries[:2]:  # Limit queries
+                results = await self._linkup_search_safe(query, max_results=3)
+                
+                for result in results:
+                    title = result.get('title', '')
+                    url = result.get('url', '')
+                    description = result.get('description', result.get('summary', ''))
+                    
+                    # Filter for report sources (may require purchase)
+                    if any(indicator in url.lower() or indicator in title.lower() for indicator in ['report', 'research', 'analysis', 'market', 'gartner', 'forrester', 'mckinsey']):
+                        suggestions.append({
+                            'action_type': ActionType.DATASET.value,  # Industry reports are datasets
+                            'title': f"Industry report: {title}",
+                            'description': f"Comprehensive industry report on {focus_keyword}. {description[:200] if description else 'Found via Linkup research.'}",
+                            'resource_name': title,
+                            'estimated_effort_hours': 6,
+                            'difficulty_level': 'intermediate',
+                            'expected_benefit': f"Industry insights and market intelligence for {focus_keyword}",
+                            'cost_estimate': '$200-2000',
+                            'implementation_notes': f"Purchase or access via subscription. URL: {url}",
+                            'content_enhancement_potential': 'Provides authoritative industry data and competitive analysis',
+                            'linkup_source': url,
+                            'linkup_title': title
+                        })
+                        
+                        if len(suggestions) >= 2:  # Limit to 2 report suggestions
+                            break
+                
+                if len(suggestions) >= 2:
+                    break
+                    
+        except Exception as e:
+            self.logger.error(f"Error finding industry reports via Linkup: {e}")
+        
+        return suggestions
+    
+    async def _linkup_search_safe(self, query: str, max_results: int = 3) -> List[Dict]:
+        """Safely perform Linkup search with error handling"""
+        
+        if not self.linkup_client:
+            return []
+        
+        try:
+            import asyncio
+            
+            # Use standard depth for cost efficiency (suggestions are supplementary)
+            depth = "standard"
+            output_type = "searchResults"
+            
+            self.logger.info(f"🔍 LINKUP SUGGESTION SEARCH: '{query}' (max: {max_results}, depth: {depth})")
+            
+            # Make the API call
+            response = await asyncio.to_thread(
+                self.linkup_client.search,
+                query=query,
+                depth=depth,
+                output_type=output_type
+            )
+            
+            results = []
+            
+            # Process searchResults
+            if hasattr(response, 'results') and response.results:
+                for result in response.results[:max_results]:
+                    try:
+                        title = getattr(result, 'name', getattr(result, 'title', 'Unknown Title'))
+                        content = getattr(result, 'content', getattr(result, 'description', ''))
+                        url = getattr(result, 'url', '')
+                        author = getattr(result, 'author', None)
+                        
+                        results.append({
+                            'title': title,
+                            'description': content,
+                            'summary': content[:500] + "..." if len(content) > 500 else content,
+                            'url': url,
+                            'author': author
+                        })
+                    except Exception as e:
+                        self.logger.warning(f"Error processing Linkup result: {e}")
+                        continue
+            
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"Error in Linkup search for suggestions: {e}")
             return []
     
     async def _suggest_textbooks(self, gap, research_results: Dict) -> List[Dict]:
@@ -234,41 +549,215 @@ class ManualActionSuggestionsGenerator:
         return suggestions
     
     async def _suggest_datasets(self, gap, research_results: Dict) -> List[Dict]:
-        """Suggest relevant datasets to research and acquire"""
+        """Suggest relevant datasets to research and acquire based on gap analysis"""
         
         suggestions = []
         topic_category = gap.topic_category
+        focus_keyword = gap.focus_keyword.lower()
         
-        # Get base dataset suggestions for the category
-        base_datasets = self.suggestion_templates.get(topic_category, {}).get('datasets', [])
+        # Check what data was actually found in research
+        sources_found = research_results.get('sources_found', {})
+        total_sources = research_results.get('total_sources', 0)
+        research_quality = research_results.get('research_quality_score', 0)
         
-        for dataset in base_datasets:
+        # Analyze focus keyword to determine appropriate dataset types
+        is_product_name = self._is_product_or_brand_name(focus_keyword)
+        is_simple_query = len(focus_keyword.split()) <= 2 and not any(char in focus_keyword for char in ['rate', 'cost', 'price', 'comparison', 'vs'])
+        needs_benchmarking = self._needs_benchmarking_data(focus_keyword, topic_category, gap.target_audience)
+        needs_statistical_data = 'statistical_data' in gap.data_types_needed
+        needs_market_data = 'industry_reports' in gap.data_types_needed or 'market_data' in gap.data_types_needed
+        
+        # Only suggest base category datasets if research quality is low or specific data types are missing
+        if research_quality < 50 or needs_statistical_data:
+            base_datasets = self.suggestion_templates.get(topic_category, {}).get('datasets', [])
+            
+            # Filter to only suggest relevant datasets
+            for dataset in base_datasets:
+                # Skip generic suggestions if we have a specific product/query
+                if is_product_name and 'general' in dataset.lower():
+                    continue
+                    
+                suggestions.append({
+                    'action_type': ActionType.DATASET.value,
+                    'title': f"Acquire dataset: {dataset}",
+                    'description': f"Obtain and analyze {dataset} to provide data-driven insights for {gap.focus_keyword}",
+                    'resource_name': dataset,
+                    'estimated_effort_hours': 8,
+                    'difficulty_level': 'intermediate',
+                    'expected_benefit': f'Unique data insights and statistics to support content about {gap.focus_keyword}',
+                    'cost_estimate': '$0-500',
+                    'implementation_notes': 'Research data sources, download/purchase dataset, perform analysis in Excel/Python',
+                    'content_enhancement_potential': 'Provides exclusive statistics and data visualizations'
+                })
+        
+        # Suggest specific datasets based on focus keyword and gap requirements
+        if needs_benchmarking and not is_product_name and not is_simple_query:
+            # Generate contextual benchmarking suggestion
+            benchmark_title, benchmark_desc, benchmark_resource = self._generate_benchmarking_suggestion(
+                gap.focus_keyword, topic_category
+            )
+            
             suggestions.append({
                 'action_type': ActionType.DATASET.value,
-                'title': f"Acquire dataset: {dataset}",
-                'description': f"Obtain and analyze {dataset} to provide data-driven insights for {gap.focus_keyword}",
-                'resource_name': dataset,
-                'estimated_effort_hours': 8,
-                'difficulty_level': 'intermediate',
-                'expected_benefit': 'Unique data insights and statistics to support content claims',
-                'cost_estimate': '$0-500',
-                'implementation_notes': 'Research data sources, download/purchase dataset, perform analysis in Excel/Python',
-                'content_enhancement_potential': 'Provides exclusive statistics and data visualizations'
-            })
-        
-        # Add specific dataset suggestions based on audience and topic
-        if gap.target_audience in ['professional', 'entrepreneur']:
-            suggestions.append({
-                'action_type': ActionType.DATASET.value,
-                'title': f"Industry benchmarking data for {gap.focus_keyword}",
-                'description': f"Collect industry-specific performance metrics and benchmarks related to {gap.focus_keyword}",
-                'resource_name': f"{topic_category} industry benchmarks",
+                'title': benchmark_title,
+                'description': benchmark_desc,
+                'resource_name': benchmark_resource,
                 'estimated_effort_hours': 12,
                 'difficulty_level': 'advanced',
-                'expected_benefit': 'Competitive analysis and industry positioning insights',
+                'expected_benefit': f'Competitive analysis and industry positioning insights for {gap.focus_keyword}',
                 'cost_estimate': '$200-1000',
-                'implementation_notes': 'Contact industry associations, purchase market research reports, conduct surveys',
+                'implementation_notes': self._generate_benchmarking_implementation_notes(gap.focus_keyword, topic_category),
                 'content_enhancement_potential': 'Enables comparative analysis and industry-specific recommendations'
+            })
+        
+        # Suggest specific datasets based on data types needed
+        if needs_market_data and not is_product_name:
+            market_suggestion = self._generate_market_data_suggestion(gap.focus_keyword, topic_category)
+            if market_suggestion:
+                suggestions.append(market_suggestion)
+        
+        # Suggest specialized datasets based on focus keyword analysis
+        specialized_suggestions = self._generate_specialized_dataset_suggestions(gap, research_results)
+        suggestions.extend(specialized_suggestions)
+        
+        return suggestions
+    
+    def _is_product_or_brand_name(self, focus_keyword: str) -> bool:
+        """Determine if focus keyword is a specific product or brand name"""
+        # Common product naming patterns
+        product_keywords = ['model', 'pro', 'max', 'plus', 'premium', 'edition', 'series', 'version']
+        has_product_keyword = any(keyword in focus_keyword for keyword in product_keywords)
+        
+        # Check for model numbers/versions (t6, t5, v1, etc.)
+        words = focus_keyword.split()
+        has_model_number = any(word.lower() in ['t6', 't5', 't4', 'v1', 'v2', 'v3'] or 
+                              (len(word) <= 3 and word[0].isupper() and word[1:].isdigit()) 
+                              for word in words)
+        
+        # Check for brand names (common ones)
+        common_brands = ['honeywell', 'nest', 'ecobee', 'amazon', 'google', 'apple', 'samsung']
+        has_brand = any(brand in focus_keyword.lower() for brand in common_brands)
+        
+        # Check for Brand Model format (e.g., "Honeywell T6")
+        is_brand_model_format = (len(words) == 2 and 
+                                any(word.isupper() or (word[0].isupper() and len(word) <= 3) 
+                                    for word in words))
+        
+        return has_brand or has_model_number or has_product_keyword or is_brand_model_format
+    
+    def _needs_benchmarking_data(self, focus_keyword: str, topic_category: str, target_audience: str) -> bool:
+        """Determine if benchmarking data is relevant for this gap"""
+        
+        # Benchmarking is not relevant for simple queries or product names
+        if len(focus_keyword.split()) <= 2:
+            return False
+        
+        # Benchmarking is relevant for business/finance topics with professional audience
+        if topic_category in ['business', 'finance'] and target_audience in ['professional', 'entrepreneur']:
+            # But not for simple queries like "how find"
+            if any(word in focus_keyword for word in ['how', 'what', 'why', 'when', 'where']):
+                return len(focus_keyword.split()) > 3  # Only if it's a complex query
+            
+            # Relevant for topics about rates, costs, performance, strategies
+            benchmarking_keywords = ['rate', 'cost', 'price', 'performance', 'strategy', 'analysis', 
+                                   'comparison', 'benchmark', 'roi', 'return', 'investment', 'market']
+            return any(keyword in focus_keyword for keyword in benchmarking_keywords)
+        
+        return False
+    
+    def _generate_benchmarking_suggestion(self, focus_keyword: str, topic_category: str) -> tuple:
+        """Generate contextual benchmarking suggestion title, description, and resource name"""
+        
+        # Extract the core topic from focus keyword
+        core_topic = focus_keyword
+        
+        # Create specific title based on topic
+        if 'rate' in focus_keyword.lower() or 'cost' in focus_keyword.lower():
+            title = f"Industry benchmarking data for {focus_keyword}"
+            description = f"Collect current industry rates, costs, and performance benchmarks for {focus_keyword} to provide accurate comparative analysis"
+            resource = f"{topic_category} industry rate and cost benchmarks"
+        elif 'performance' in focus_keyword.lower() or 'efficiency' in focus_keyword.lower():
+            title = f"Performance benchmarking data for {focus_keyword}"
+            description = f"Gather industry performance metrics and efficiency benchmarks related to {focus_keyword}"
+            resource = f"{topic_category} performance benchmarks"
+        else:
+            title = f"Market analysis and benchmarking data for {focus_keyword}"
+            description = f"Collect comprehensive market data, industry benchmarks, and competitive analysis for {focus_keyword}"
+            resource = f"{topic_category} market benchmarks and analysis"
+        
+        return title, description, resource
+    
+    def _generate_benchmarking_implementation_notes(self, focus_keyword: str, topic_category: str) -> str:
+        """Generate specific implementation notes for benchmarking data collection"""
+        
+        if topic_category == 'finance':
+            return f"Research current {focus_keyword} rates from Federal Reserve, financial institutions, and industry reports. Compare across different providers and regions."
+        elif topic_category == 'business':
+            return f"Contact industry associations for {focus_keyword} benchmarks. Purchase market research reports from Gartner, Forrester, or industry-specific analysts. Conduct surveys if needed."
+        elif topic_category == 'real_estate':
+            return f"Obtain local MLS data, county records, and real estate market reports for {focus_keyword}. Compare with national averages and similar markets."
+        else:
+            return f"Contact relevant industry associations, purchase market research reports, and conduct surveys to gather benchmarking data for {focus_keyword}"
+    
+    def _generate_market_data_suggestion(self, focus_keyword: str, topic_category: str) -> Optional[Dict]:
+        """Generate market data suggestion if relevant"""
+        
+        # Only suggest for topics that would benefit from market data
+        market_keywords = ['market', 'industry', 'trend', 'growth', 'size', 'forecast', 'outlook']
+        if not any(keyword in focus_keyword.lower() for keyword in market_keywords):
+            return None
+        
+        return {
+            'action_type': ActionType.DATASET.value,
+            'title': f"Market research data for {focus_keyword}",
+            'description': f"Acquire comprehensive market research data including market size, growth trends, and forecasts for {focus_keyword}",
+            'resource_name': f"{topic_category} market research data",
+            'estimated_effort_hours': 10,
+            'difficulty_level': 'intermediate',
+            'expected_benefit': f'Current market intelligence and trend analysis for {focus_keyword}',
+            'cost_estimate': '$300-1500',
+            'implementation_notes': 'Purchase market research reports from industry analysts, access industry databases, review government economic data',
+            'content_enhancement_potential': 'Provides authoritative market data and trend analysis'
+        }
+    
+    def _generate_specialized_dataset_suggestions(self, gap, research_results: Dict) -> List[Dict]:
+        """Generate specialized dataset suggestions based on gap analysis"""
+        
+        suggestions = []
+        focus_keyword = gap.focus_keyword.lower()
+        
+        # Check what's missing from research
+        sources_found = research_results.get('sources_found', {})
+        
+        # Suggest historical data if relevant
+        if any(word in focus_keyword for word in ['rate', 'price', 'cost', 'trend', 'historical']):
+            if 'statistical_data' not in sources_found or len(sources_found.get('statistical_data', [])) < 2:
+                suggestions.append({
+                    'action_type': ActionType.DATASET.value,
+                    'title': f"Historical data and trends for {gap.focus_keyword}",
+                    'description': f"Collect historical data showing trends, changes, and patterns for {gap.focus_keyword} over time",
+                    'resource_name': f"Historical {gap.focus_keyword} data",
+                    'estimated_effort_hours': 6,
+                    'difficulty_level': 'intermediate',
+                    'expected_benefit': f'Historical context and trend analysis for {gap.focus_keyword}',
+                    'cost_estimate': '$0-300',
+                    'implementation_notes': f'Access government databases, historical records, and time-series data sources for {gap.focus_keyword}',
+                    'content_enhancement_potential': 'Provides historical context and trend visualization'
+                })
+        
+        # Suggest comparison data if relevant
+        if 'comparison' in focus_keyword or 'vs' in focus_keyword or 'versus' in focus_keyword:
+            suggestions.append({
+                'action_type': ActionType.DATASET.value,
+                'title': f"Comparative analysis data for {gap.focus_keyword}",
+                'description': f"Gather data comparing different options, providers, or approaches for {gap.focus_keyword}",
+                'resource_name': f"Comparison data for {gap.focus_keyword}",
+                'estimated_effort_hours': 8,
+                'difficulty_level': 'intermediate',
+                'expected_benefit': f'Data-driven comparison to help readers make informed decisions about {gap.focus_keyword}',
+                'cost_estimate': '$100-500',
+                'implementation_notes': f'Research multiple sources, compile comparison tables, verify data accuracy across providers',
+                'content_enhancement_potential': 'Enables objective comparison and decision-making support'
             })
         
         return suggestions
@@ -624,7 +1113,9 @@ class ManualActionSuggestionsGenerator:
                     'additional_data': json.dumps({
                         'technical_requirements': suggestion.get('technical_requirements'),
                         'interview_topics': suggestion.get('interview_topics'),
-                        'original_focus_keyword': research_context.get('focus_keyword')
+                        'original_focus_keyword': research_context.get('focus_keyword'),
+                        'linkup_source': suggestion.get('linkup_source'),
+                        'linkup_title': suggestion.get('linkup_title')
                     })
                 }
                 suggestions_to_insert.append(suggestion_record)
