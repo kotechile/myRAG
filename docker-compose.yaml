@@ -10,6 +10,9 @@ services:
       # Map container port 8080 to host port 8081 (or env var HOST_PORT)
       # This avoids conflict with other services on 8080
       - "${HOST_PORT:-8081}:8080"
+    # Explicitly expose port for Coolify/Proxy detection
+    expose:
+      - "8080"
     # Coolify/Production Configuration
     # In Coolify, environment variables should be set in the UI
     # We keep "build" context for local testing or if Coolify builds from repo

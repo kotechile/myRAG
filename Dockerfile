@@ -12,6 +12,9 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# Expose port for Coolify detection
+EXPOSE 8080
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
