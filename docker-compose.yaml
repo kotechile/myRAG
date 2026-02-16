@@ -21,4 +21,10 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-    # Relies on default network which Coolify should manage/attach to proxy
+    networks:
+      - coolify
+      - default
+
+networks:
+  coolify:
+    external: true
