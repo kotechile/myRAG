@@ -22,6 +22,7 @@ services:
     # Explicitly configure Traefik for Port 80 to ensure routing
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=coolify"
       - "traefik.http.routers.rag-system.rule=Host(`rag.aichieve.net`)"
       - "traefik.http.routers.rag-system.entrypoints=websecure"
       - "traefik.http.routers.rag-system.tls.certresolver=letsencrypt"
