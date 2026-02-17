@@ -61,7 +61,7 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Database configuration
-DB_CONNECTION = f"postgresql://postgres.dgcsqiaciyqvprtpopxg:{SUPABASE_DATABASE_PASSWORD}@aws-0-us-west-1.pooler.supabase.com:5432/postgres"
+DB_CONNECTION = os.getenv("DB_CONNECTION") or f"postgresql://postgres.dgcsqiaciyqvprtpopxg:{SUPABASE_DATABASE_PASSWORD}@aws-0-us-west-1.pooler.supabase.com:5432/postgres"
 DEFAULT_LLM_PROVIDER = "deepseek"
 
 # Global storage
@@ -3805,7 +3805,7 @@ if __name__ == '__main__':
             logger.info(f"🧠 Final memory usage before start: {memory_mb:.1f} MB")
             
             # Start with conservative settings
-            app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), threaded=True)
+            app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 80)), threaded=True)
         else:
             logger.error("❌ Failed to create Flask application")
     except KeyboardInterrupt:
