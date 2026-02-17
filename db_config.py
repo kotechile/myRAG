@@ -49,7 +49,7 @@ def get_llm_config(provider_name: str = None, model_name: str = None) -> Optiona
         query = supabase.table("llm_providers").select("*").eq("is_active", True)
 
         if provider_name:
-            query = query.ilike("provider_type", provider_name)
+            query = query.ilike("provider", provider_name)
         
         if model_name:
             query = query.eq("model_name", model_name)
@@ -63,14 +63,10 @@ def get_llm_config(provider_name: str = None, model_name: str = None) -> Optiona
             logger.warning(f"No active LLM provider found matching: provider={provider_name}, model={model_name}")
             return None
             
-        if not result.data:
-            logger.warning(f"No active LLM provider found matching: provider={provider_name}, model={model_name}")
-            return None
-            
         # Iterate through providers to find one with a valid key
         for provider_config in result.data:
-            # Extract API key ID
-            api_key_id = provider_config.get("api_key")
+            # Extract API key ID (Fixed: column is api_keys_id, not api_key)
+            api_key_id = provider_config.get("api_keys_id")
             if not api_key_id:
                 logger.warning(f"Provider {provider_config.get('name')} (ID: {provider_config.get('id')}) has no associated API key ID. Skipping.")
                 continue
@@ -92,7 +88,7 @@ def get_llm_config(provider_name: str = None, model_name: str = None) -> Optiona
                     
                 # Found a valid config!
                 config = {
-                    "provider": provider_config.get("provider_type"),
+                    "provider": provider_config.get("provider"), # Fixed: column is provider, not provider_type
                     "model": provider_config.get("model_name"),
                     "api_key": api_key_data.get("key_value"),
                     "temperature": provider_config.get("temperature"),
