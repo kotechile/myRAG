@@ -67,44 +67,56 @@ def get_llm_config(provider_name: str = None, model_name: str = None) -> Optiona
         for provider_config in result.data:
             # Extract API key ID (Fixed: column is api_keys_id, not api_key)
             api_key_id = provider_config.get("api_keys_id")
-            if not api_key_id:
-                logger.warning(f"Provider {provider_config.get('name')} (ID: {provider_config.get('id')}) has no associated API key ID. Skipping.")
-                continue
-                
-            # Fetch actual API key from api_keys table
-            # We try/except individual fetches to avoid crashing the loop
-            try:
-                key_result = supabase.table("api_keys").select("*").eq("id", api_key_id).execute()
-                
-                if not key_result.data:
-                     logger.warning(f"API key with ID {api_key_id} for provider {provider_config.get('name')} not found in api_keys table. Skipping.")
-                     continue
-                     
-                api_key_data = key_result.data[0]
-                
-                if not api_key_data.get("key_value"):
-                    logger.warning(f"API key value missing for provider {provider_config.get('name')}. Skipping.")
-                    continue
+            api_key_data = None
+            
+            if api_key_id:
+                # 1. Try fetching by ID
+                try:
+                    key_result = supabase.table("api_keys").select("*").eq("id", api_key_id).execute()
+                    if key_result.data:
+                        api_key_data = key_result.data[0]
+                except Exception as e_id:
+                    logger.warning(f"Error fetching key by ID {api_key_id}: {e_id}")
+            
+            if not api_key_data:
+                # 2. Fallback: Try fetching by provider name
+                provider_type = provider_config.get("provider")
+                if provider_type:
+                    # Map 'google' to 'gemini' if needed (based on api_keys screenshot)
+                    provider_search = provider_type.lower()
+                    if provider_search == "google":
+                        provider_search = "gemini"
                     
-                # Found a valid config!
-                config = {
-                    "provider": provider_config.get("provider"), # Fixed: column is provider, not provider_type
-                    "model": provider_config.get("model_name"),
-                    "api_key": api_key_data.get("key_value"),
-                    "temperature": provider_config.get("temperature"),
-                    "max_tokens": provider_config.get("max_tokens"),
-                    "top_p": provider_config.get("top_p"),
-                    "frequency_penalty": provider_config.get("frequency_penalty"),
-                    "presence_penalty": provider_config.get("presence_penalty"),
-                    # Add other fields as needed
-                }
-                
-                # Filter out None values
-                return {k: v for k, v in config.items() if v is not None}
-                
-            except Exception as e_inner:
-                logger.error(f"Error fetching key for provider {provider_config.get('name')}: {e_inner}")
+                    try:
+                        key_result = supabase.table("api_keys").select("*").ilike("provider", provider_search).eq("is_active", True).execute()
+                        if key_result.data:
+                            # Use the first active key found for this provider
+                            api_key_data = key_result.data[0]
+                    except Exception as e_name:
+                        logger.warning(f"Error fetching key by provider name {provider_search}: {e_name}")
+
+            if not api_key_data or not api_key_data.get("key_value"):
+                logger.warning(f"No valid API key found for provider {provider_config.get('name')}. provider_config: {provider_config}. api_key_data: {api_key_data}")
                 continue
+            
+            logger.info(f"Successfully resolved key for {provider_config.get('name')} using {'ID' if api_key_id and api_key_data.get('id') == api_key_id else 'fallback'}")
+
+                    
+            # Found a valid config!
+            config = {
+                "provider": provider_config.get("provider"), # Fixed: column is provider, not provider_type
+                "model": provider_config.get("model_name"),
+                "api_key": api_key_data.get("key_value"),
+                "temperature": provider_config.get("temperature"),
+                "max_tokens": provider_config.get("max_tokens"),
+                "top_p": provider_config.get("top_p"),
+                "frequency_penalty": provider_config.get("frequency_penalty"),
+                "presence_penalty": provider_config.get("presence_penalty"),
+                # Add other fields as needed
+            }
+            
+            # Filter out None values
+            return {k: v for k, v in config.items() if v is not None}
 
         logger.error("No valid LLM configuration could be resolved from active providers.")
         return None
