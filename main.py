@@ -281,11 +281,19 @@ else:
     logger.info("✅ Supabase client initialized successfully (from db_config)")
 
 # Initialize LlamaParse client
-parser = LlamaParse(
-    api_key=LLAMA_PARSE_API_KEY,
-    result_type="markdown",
-    num_workers=4,
-)
+parser = None
+if LLAMA_PARSE_API_KEY:
+    try:
+        parser = LlamaParse(
+            api_key=LLAMA_PARSE_API_KEY,
+            result_type="markdown",
+            num_workers=4,
+        )
+        logger.info("✅ LlamaParse client initialized successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize LlamaParse: {e}")
+else:
+    logger.warning("⚠️ Skipping LlamaParse initialization due to missing API key")
 
 # Initialize default LLM from DB config
 try:
