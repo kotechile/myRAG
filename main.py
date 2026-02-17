@@ -287,20 +287,29 @@ parser = LlamaParse(
     num_workers=4,
 )
 
-# Initialize default LLM
+# Initialize default LLM from DB config
 try:
-    default_llm = LLMProviderFactory.get_llm_instance(DEFAULT_LLM_PROVIDER)
-    Settings.llm = default_llm
-    logger.info(f"Initialized {DEFAULT_LLM_PROVIDER} as default LLM")
+    llm_config = db_config.get_llm_config()
+    if llm_config:
+        provider = llm_config.get("provider", "openai")
+        # Pass all config fields to the factory
+        default_llm = LLMProviderFactory.get_llm_instance(provider, **llm_config)
+        Settings.llm = default_llm
+        logger.info(f"✅ Initialized {provider} ({llm_config.get('model')}) as default LLM from DB")
+    else:
+        logger.warning("No default LLM config found in DB, attempting fallback...")
+        # Fallback to env-based initialization if DB config missing
+        from llama_index.llms.openai import OpenAI
+        Settings.llm = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o-mini")
+        logger.info("Initialized fallback OpenAI LLM")
 except Exception as e:
     logger.error(f"Error initializing default LLM: {str(e)}")
-    Settings.llm = DeepSeek(
-        model="deepseek-chat", 
-        api_key=DEEPSEEK_API_KEY,
-        temperature=0.3,
-        max_tokens=750,
-        timeout=30
-    )
+    # Last resort fallback to avoid crash
+    try:
+        from llama_index.llms.openai import OpenAI
+        Settings.llm = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o-mini")
+    except:
+        pass
 
 # Initialize components
 document_chunker = OptimizedDocumentChunker(embed_model=embed_model)
