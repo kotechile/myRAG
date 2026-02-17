@@ -32,12 +32,18 @@ def verify_config():
             # DEBUG: Inspect DB Content
             logger.info("--- DEBUGGING DATA ---")
             try:
-                providers = db_config.supabase.table("llm_providers").select("id, name, api_key").execute()
+                # Use the client from db_config which should be initialized
+                supabase = db_config.supabase
+                if not supabase:
+                    logger.error("Supabase client in db_config is None!")
+                    return False
+                    
+                providers = supabase.table("llm_providers").select("id, name, api_key").execute()
                 logger.info(f"LLM Providers found: {len(providers.data)}")
                 for p in providers.data:
                     logger.info(f"  - Provider: {p.get('name')}, API Key ID: {p.get('api_key')}")
                 
-                keys = db_config.supabase.table("api_keys").select("id, key_name").execute()
+                keys = supabase.table("api_keys").select("id, key_name").execute()
                 logger.info(f"API Keys found: {len(keys.data)}")
                 for k in keys.data:
                     logger.info(f"  - Key: {k.get('key_name')}, ID: {k.get('id')}")

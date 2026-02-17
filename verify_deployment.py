@@ -3,6 +3,7 @@ import requests
 import sys
 
 BASE_URL = "https://rag.aichieve.net"
+# BASE_URL = "http://localhost:8080"
 
 def check_endpoint(endpoint):
     url = f"{BASE_URL}{endpoint}"
@@ -20,6 +21,7 @@ def check_endpoint(endpoint):
             return True
         else:
             print(f"❌ {response.status_code}")
+            print(f"   Headers: {response.headers}")
             print(f"   Response: {response.text[:200]}")
             return False
     except Exception as e:
