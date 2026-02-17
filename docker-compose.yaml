@@ -17,8 +17,14 @@ services:
       - ./uploads:/app/uploads
     restart: always
 
-    # Remove manual Traefik labels and let Coolify handle it automatically
-    # based on the exposed port and domain settings in the UI.
+    # Traefik labels for explicit routing to port 8080
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=coolify"
+      - "traefik.http.routers.rag-system.rule=Host(`rag.aichieve.net`)"
+      - "traefik.http.routers.rag-system.entrypoints=websecure"
+      - "traefik.http.routers.rag-system.tls.certresolver=letsencrypt"
+      - "traefik.http.services.rag-system.loadbalancer.server.port=8080"
 
     healthcheck:
       test: [ "CMD-SHELL", "curl -f http://127.0.0.1:8080/health || exit 1" ]
