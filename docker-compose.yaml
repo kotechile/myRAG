@@ -20,11 +20,11 @@ services:
     # Traefik labels for explicit routing to port 8080
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=coolify"
       - "traefik.http.routers.rag-system.rule=Host(`rag.aichieve.net`)"
       - "traefik.http.routers.rag-system.entrypoints=websecure"
       - "traefik.http.routers.rag-system.tls.certresolver=letsencrypt"
       - "traefik.http.services.rag-system.loadbalancer.server.port=8080"
+      - "traefik.docker.network=coolify"
 
     healthcheck:
       test: [ "CMD-SHELL", "curl -f http://127.0.0.1:8080/health || exit 1" ]
@@ -35,7 +35,6 @@ services:
 
     networks:
       - coolify
-      - default
 
 networks:
   coolify:
