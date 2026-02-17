@@ -2166,7 +2166,7 @@ def create_app():
         logger.info("🚀 Starting Flask application creation...")
         log_memory_usage()
         app = Flask(__name__)
-        app.config['UPLOAD_FOLDER'] = '/tmp/uploads'
+        app.config['UPLOAD_FOLDER'] = '/app/uploads'
         app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024
 
         os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -3805,7 +3805,7 @@ if __name__ == '__main__':
             logger.info(f"🧠 Final memory usage before start: {memory_mb:.1f} MB")
             
             # Start with conservative settings
-            app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 80)), threaded=True)
+            app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), threaded=True)
         else:
             logger.error("❌ Failed to create Flask application")
     except KeyboardInterrupt:
