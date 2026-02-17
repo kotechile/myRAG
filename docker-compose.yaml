@@ -17,6 +17,12 @@ services:
       - ./uploads:/app/uploads
     restart: always
 
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.rag-system.rule=Host(`rag.aichieve.net`)"
+      - "traefik.http.services.rag-system.loadbalancer.server.port=80"
+      - "traefik.docker.network=coolify"
+
     healthcheck:
       test: [ "CMD-SHELL", "curl -f http://127.0.0.1:80/health || exit 1" ]
       interval: 10s
