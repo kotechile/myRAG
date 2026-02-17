@@ -17,10 +17,19 @@ services:
       - ./uploads:/app/uploads
     restart: always
 
-    # Traefik labels - simplified for Coolify
+    # Traefik labels - Robust configuration
     labels:
       - "traefik.enable=true"
-      - "traefik.http.services.rag-service.loadbalancer.server.port=8080"
+      # HTTP Router (for ACME challenge and redirection)
+      - "traefik.http.routers.rag-system-http.rule=Host(`rag.aichieve.net`)"
+      - "traefik.http.routers.rag-system-http.entrypoints=web"
+      # HTTPS Router
+      - "traefik.http.routers.rag-system-https.rule=Host(`rag.aichieve.net`)"
+      - "traefik.http.routers.rag-system-https.entrypoints=websecure"
+      - "traefik.http.routers.rag-system-https.tls=true"
+      - "traefik.http.routers.rag-system-https.tls.certresolver=letsencrypt"
+      # Service definition
+      - "traefik.http.services.rag-system.loadbalancer.server.port=8080"
       - "traefik.docker.network=coolify"
 
     healthcheck:

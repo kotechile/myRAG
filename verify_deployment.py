@@ -35,6 +35,7 @@ def main():
     
     endpoints = [
         "/",  # Root might show status or 404 depending on app
+        "http://rag.aichieve.net/health", # Check if HTTP is working (ACME challenge path)
         "/health",  # Unconditional health check
         "/query_hybrid_enhanced/health",
         "/query_hybrid_enhanced/status", 
