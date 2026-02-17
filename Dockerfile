@@ -1,5 +1,5 @@
 # Dockerfile for RAG System
-# Uses Python 3.13 for compatibility with all dependencies
+# Uses Python 3.11 for compatibility with all dependencies
 
 FROM python:3.11-slim
 
@@ -12,8 +12,8 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Expose port 8080 for standard web traffic (non-root)
-EXPOSE 8080
+# Expose port 80 for standard web traffic
+EXPOSE 80
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -41,7 +41,6 @@ RUN chown -R appuser:appgroup /app
 # Switch to non-root user
 USER appuser
 
-# Run the application with Gunicorn on port 8080
+# Run the application with Gunicorn on port 80
 # Using create_app() factory pattern
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--access-logfile", "-", "--workers", "2", "--threads", "4", "--timeout", "120", "main:create_app()"]
-
+CMD ["gunicorn", "--bind", "0.0.0.0:80", "--access-logfile", "-", "--workers", "2", "--threads", "4", "--timeout", "120", "main:create_app()"]

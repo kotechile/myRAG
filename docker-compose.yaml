@@ -7,9 +7,9 @@ services:
       dockerfile: Dockerfile
     # container_name removed to allow Coolify to manage naming/scaling
     expose:
-      - "8080"
+      - "80"
     environment:
-      - PORT=8080
+      - PORT=80
       - FLASK_ENV=production
       # All other env vars should be injected by Coolify from .env
 
@@ -17,17 +17,8 @@ services:
       - ./uploads:/app/uploads
     restart: always
 
-    # Traefik labels for explicit routing to port 8080
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.rag-system.rule=Host(`rag.aichieve.net`)"
-      - "traefik.http.routers.rag-system.entrypoints=websecure"
-      - "traefik.http.routers.rag-system.tls.certresolver=letsencrypt"
-      - "traefik.http.services.rag-system.loadbalancer.server.port=8080"
-      - "traefik.docker.network=coolify"
-
     healthcheck:
-      test: [ "CMD-SHELL", "curl -f http://127.0.0.1:8080/health || exit 1" ]
+      test: [ "CMD-SHELL", "curl -f http://127.0.0.1:80/health || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 3
