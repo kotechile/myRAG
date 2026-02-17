@@ -291,11 +291,10 @@ parser = LlamaParse(
 try:
     llm_config = db_config.get_llm_config()
     if llm_config:
-        provider = llm_config.get("provider", "openai")
-        # Pass all config fields to the factory
-        default_llm = LLMProviderFactory.get_llm_instance(provider, **llm_config)
+        # Pass all config fields to the factory (llm_config already contains 'provider')
+        default_llm = LLMProviderFactory.get_llm_instance(**llm_config)
         Settings.llm = default_llm
-        logger.info(f"✅ Initialized {provider} ({llm_config.get('model')}) as default LLM from DB")
+        logger.info(f"✅ Initialized {llm_config.get('provider')} ({llm_config.get('model')}) as default LLM from DB")
     else:
         logger.warning("No default LLM config found in DB, attempting fallback...")
         # Fallback to env-based initialization if DB config missing
