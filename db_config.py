@@ -16,17 +16,25 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 # Prefer service role key for backend operations if available
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
 
+# Clean credentials
+if SUPABASE_URL:
+    SUPABASE_URL = SUPABASE_URL.strip("'\" \n\t")
 if SUPABASE_KEY:
-    SUPABASE_KEY = SUPABASE_KEY.strip("'\" \n\t") # Strip quotes and whitespace
-if not SUPABASE_URL or not SUPABASE_KEY:
-    logger.error("Supabase credentials missing in environment variables.")
+    SUPABASE_KEY = SUPABASE_KEY.strip("'\" \n\t")
 
-# Create Supabase client
-try:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-except Exception as e:
-    logger.error(f"Failed to initialize Supabase client: {e}")
+# Validate credentials before attempting initialization
+if not SUPABASE_URL or not SUPABASE_KEY:
+    logger.error(f"Supabase credentials missing or empty. URL present: {bool(SUPABASE_URL)}, Key present: {bool(SUPABASE_KEY)}")
     supabase = None
+else:
+    # Create Supabase client
+    try:
+        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        logger.info(f"Supabase client initialized successfully. URL: {SUPABASE_URL[:20]}...")
+    except Exception as e:
+        logger.error(f"🚨 Failed to initialize Supabase client: {str(e)}")
+        logger.error(f"Details - URL: {SUPABASE_URL[:20]}..., Key Length: {len(SUPABASE_KEY) if SUPABASE_KEY else 0}")
+        supabase = None
 
 def get_llm_config(provider_name: str = None, model_name: str = None) -> Optional[Dict[str, Any]]:
     """
