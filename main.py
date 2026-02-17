@@ -271,7 +271,14 @@ embed_model = embedding_manager.get_model()
 Settings.embed_model = embed_model
 
 # Initialize Supabase client
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Use the client already initialized in db_config to avoid duplicate connections and key errors
+supabase = db_config.supabase
+
+if not supabase:
+    logger.error("❌ Failed to initialize Supabase client (from db_config)")
+    # We could raise here, but let's allow it to continue and fail gracefully in endpoints if needed
+else:
+    logger.info("✅ Supabase client initialized successfully (from db_config)")
 
 # Initialize LlamaParse client
 parser = LlamaParse(
