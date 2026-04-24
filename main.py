@@ -2427,6 +2427,23 @@ def create_app():
         import __main__
         __main__.document_processor = document_processor
         __main__.background_executor = background_executor
+
+        @app.after_request
+        def add_cors_headers(response):
+            """Add permissive CORS headers so browser clients can call the API."""
+            origin = request.headers.get('Origin')
+            response.headers['Access-Control-Allow-Origin'] = origin or '*'
+            response.headers['Vary'] = 'Origin'
+            response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
+            response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PATCH, DELETE, OPTIONS'
+            return response
+
+        @app.route('/collections/delete', methods=['OPTIONS'])
+        @app.route('/collections/<collection_name>/documents/delete', methods=['OPTIONS'])
+        @app.route('/upload_text', methods=['OPTIONS'])
+        def handle_preflight(collection_name=None):
+            """Handle browser preflight requests for frontend API calls."""
+            return ('', 204)
    
         @app.route('/health', methods=['GET'])
         def health_check():
