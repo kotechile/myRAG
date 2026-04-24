@@ -161,6 +161,10 @@ class EmbeddingModelManager:
         self._model = None
         self._dimension = None
         self._fitted = False
+
+    def _is_optimization_enabled(self) -> bool:
+        """Check whether optimized embeddings are required."""
+        return os.getenv("USE_EMBEDDING_OPTIMIZATION", "false").lower() == "true"
         
     def get_model(self):
         """Get the embedding model, creating it if necessary."""
@@ -176,9 +180,14 @@ class EmbeddingModelManager:
     
     def _create_embedding_model(self):
         """Create the appropriate embedding model."""
-        use_optimization = os.getenv("USE_EMBEDDING_OPTIMIZATION", "false").lower() == "true"
+        use_optimization = self._is_optimization_enabled()
         
-        if use_optimization and OPTIMIZATION_AVAILABLE:
+        if use_optimization:
+            if not OPTIMIZATION_AVAILABLE:
+                raise RuntimeError(
+                    "USE_EMBEDDING_OPTIMIZATION=true but the optimization module is not available"
+                )
+
             logger.info("🔧 Creating optimized embedding model...")
             try:
                 optimizer_path = "optimizer_128d_int8.joblib"
@@ -202,7 +211,9 @@ class EmbeddingModelManager:
                     self._fitted = False
                     return embed_model
             except Exception as e:
-                logger.warning(f"⚠️ Optimization setup failed: {e}, falling back to standard embeddings")
+                raise RuntimeError(
+                    f"Optimization is enabled but optimizer setup failed: {e}"
+                ) from e
         
         # Fallback to standard embeddings
         logger.info("📐 Using standard OpenAI embeddings (1536D)")
@@ -220,8 +231,11 @@ class EmbeddingModelManager:
                 return dim
             
             elif hasattr(model, 'optimizer') and model.optimizer and not model.optimizer.fitted:
-                logger.info("🔧 Optimizer not fitted, using standard dimension temporarily")
-                return 1536
+                logger.info("🔧 Optimizer not fitted yet, fitting before dimension detection")
+                self.ensure_optimizer_fitted()
+                dim = model.optimizer.target_dim
+                logger.info(f"📏 Detected dimension from newly fitted optimizer: {dim}")
+                return dim
             
             logger.info("📏 Testing embedding to determine dimension...")
             test_embedding = model.get_text_embedding("test")
@@ -230,9 +244,12 @@ class EmbeddingModelManager:
             return dim
             
         except Exception as e:
+            if self._is_optimization_enabled():
+                raise RuntimeError(
+                    f"Could not determine optimized embedding dimension: {e}"
+                ) from e
             logger.warning(f"Could not determine embedding dimension: {e}")
-            use_optimization = os.getenv("USE_EMBEDDING_OPTIMIZATION", "false").lower() == "true"
-            return 128 if use_optimization and OPTIMIZATION_AVAILABLE else 1536
+            return 1536
     
     def ensure_optimizer_fitted(self):
         """Ensure the optimizer is fitted if using optimization."""
@@ -269,6 +286,9 @@ embedding_manager = EmbeddingModelManager()
 
 # Set the embedding model in Settings
 embed_model = embedding_manager.get_model()
+if embedding_manager._is_optimization_enabled():
+    embedding_manager.ensure_optimizer_fitted()
+    embedding_manager.get_dimension()
 Settings.embed_model = embed_model
 
 # Initialize Supabase client
