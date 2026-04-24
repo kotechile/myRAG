@@ -20,6 +20,7 @@ from dotenv import load_dotenv, find_dotenv
 # Supabase imports
 from supabase import create_client
 import vecs
+from vecs.exc import CollectionNotFound
 
 # LlamaIndex imports
 from llama_index.core import Settings, VectorStoreIndex, StorageContext, SimpleDirectoryReader
@@ -1981,6 +1982,153 @@ def _process_document_background(docid, collection_name, source_type="document",
             }).eq("id", docid).execute()
         except:
             pass
+
+
+def _refresh_collection_metadata_cache(collection_name: str):
+    """Refresh cached document metadata for a collection after mutations."""
+    if collection_name not in _engines:
+        return
+
+    try:
+        _engines[collection_name].document_metadata = _engines[collection_name]._load_document_metadata()
+        logger.info(
+            f"✅ Refreshed metadata cache for {collection_name}: "
+            f"{len(_engines[collection_name].document_metadata)} documents"
+        )
+    except Exception as e:
+        logger.error(f"❌ Failed to refresh metadata cache for {collection_name}: {e}")
+
+
+def _delete_documents_from_collection(collection_name: str, document_ids: List[str], user_id: Optional[str] = None) -> Dict[str, Any]:
+    """Delete documents from both the vector store and lindex_documents table."""
+    normalized_ids = []
+    seen_ids = set()
+    for doc_id in document_ids:
+        doc_id_str = str(doc_id).strip()
+        if doc_id_str and doc_id_str not in seen_ids:
+            normalized_ids.append(doc_id_str)
+            seen_ids.add(doc_id_str)
+
+    if not normalized_ids:
+        return {
+            "status": "error",
+            "error": "No valid document_ids were provided",
+            "status_code": 400
+        }
+
+    collection_response = supabase.table("lindex_collections").select("id").eq("name", collection_name).execute()
+    if not collection_response.data:
+        return {
+            "status": "error",
+            "error": f"Collection '{collection_name}' not found",
+            "status_code": 404
+        }
+
+    collection_id = collection_response.data[0]["id"]
+
+    docs_query = supabase.table("lindex_documents").select(
+        "id, title, collectionId, user_id, in_vector_store"
+    ).in_("id", normalized_ids).eq("collectionId", collection_id)
+    if user_id:
+        docs_query = docs_query.eq("user_id", user_id)
+
+    docs_response = docs_query.execute()
+    matched_docs = docs_response.data or []
+    matched_by_id = {str(doc["id"]): doc for doc in matched_docs}
+    missing_ids = [doc_id for doc_id in normalized_ids if doc_id not in matched_by_id]
+
+    if not matched_docs:
+        return {
+            "status": "error",
+            "error": "No matching documents were found for this collection",
+            "collection_name": collection_name,
+            "collection_id": collection_id,
+            "user_id": user_id,
+            "requested_document_ids": normalized_ids,
+            "missing_document_ids": missing_ids,
+            "status_code": 404
+        }
+
+    deleted_documents = []
+    failed_deletions = []
+    total_vector_chunks_deleted = 0
+    vecs_client = None
+    vector_collection = None
+    vector_collection_missing = False
+
+    try:
+        try:
+            vecs_client = vecs.create_client(DB_CONNECTION)
+            vector_collection = vecs_client.get_collection(name=collection_name)
+        except CollectionNotFound:
+            vector_collection_missing = True
+            logger.warning(
+                f"⚠️ Vector collection '{collection_name}' was not found. "
+                "Proceeding with lindex_documents cleanup only."
+            )
+
+        for doc_id in normalized_ids:
+            doc = matched_by_id.get(doc_id)
+            if not doc:
+                continue
+
+            try:
+                deleted_vector_ids = []
+                if vector_collection is not None:
+                    deleted_vector_ids = vector_collection.delete(
+                        filters={"docid": {"$eq": doc_id}}
+                    )
+
+                delete_query = supabase.table("lindex_documents").delete().eq("id", doc_id).eq("collectionId", collection_id)
+                if user_id:
+                    delete_query = delete_query.eq("user_id", user_id)
+                delete_query.execute()
+
+                vector_chunks_deleted = len(deleted_vector_ids)
+                total_vector_chunks_deleted += vector_chunks_deleted
+                deleted_documents.append({
+                    "document_id": doc_id,
+                    "title": doc.get("title", f"Document {doc_id}"),
+                    "vector_chunks_deleted": vector_chunks_deleted,
+                    "vector_collection_missing": vector_collection_missing
+                })
+            except Exception as e:
+                logger.error(f"❌ Failed to delete document {doc_id} from {collection_name}: {e}")
+                failed_deletions.append({
+                    "document_id": doc_id,
+                    "title": doc.get("title", f"Document {doc_id}"),
+                    "error": str(e)
+                })
+    finally:
+        if vecs_client is not None:
+            vecs_client.disconnect()
+
+    if deleted_documents:
+        _refresh_collection_metadata_cache(collection_name)
+
+    status = "success"
+    if failed_deletions and deleted_documents:
+        status = "partial_success"
+    elif failed_deletions:
+        status = "error"
+
+    status_code = 200 if status != "error" else 500
+
+    return {
+        "status": status,
+        "collection_name": collection_name,
+        "collection_id": collection_id,
+        "user_id": user_id,
+        "requested_document_ids": normalized_ids,
+        "deleted_count": len(deleted_documents),
+        "missing_count": len(missing_ids),
+        "failed_count": len(failed_deletions),
+        "total_vector_chunks_deleted": total_vector_chunks_deleted,
+        "deleted_documents": deleted_documents,
+        "missing_document_ids": missing_ids,
+        "failed_documents": failed_deletions,
+        "status_code": status_code
+    }
 ## ******************>
 def _execute_async_query(job_id, data):
     """Execute query in background with status updates supporting all methods."""
@@ -2367,6 +2515,72 @@ def create_app():
                     
             except Exception as e:
                 logger.exception(f"Upload error: {str(e)}")
+                return jsonify({"error": str(e)}), 500
+
+        @app.route('/upload_text', methods=['POST'])
+        def upload_text():
+            """Upload raw text content for an existing document and process it."""
+            try:
+                start_time = time.time()
+                data = request.get_json() or {}
+
+                docid = data.get('docid')
+                text = data.get('text')
+                collection_name = data.get('collection_name', 'default_collection')
+                source_type = data.get('source_type', 'text')
+                extra_metadata = data.get('metadata') or {}
+
+                if not docid or text is None:
+                    return jsonify({"error": "Missing required fields: docid and text"}), 400
+
+                if not isinstance(text, str):
+                    return jsonify({"error": "text must be a string"}), 400
+
+                if not isinstance(extra_metadata, dict):
+                    return jsonify({"error": "metadata must be a JSON object"}), 400
+
+                normalized_text = text.strip()
+                if len(normalized_text) < 20:
+                    return jsonify({"error": "Text too short. Provide at least 20 characters."}), 400
+
+                logger.info(f"Text upload started for document {docid}, collection = {collection_name}")
+
+                existing_doc = supabase.table("lindex_documents").select("id").eq("id", docid).limit(1).execute()
+                if not existing_doc.data:
+                    return jsonify({"error": f"Document {docid} not found in lindex_documents"}), 404
+
+                supabase.table("lindex_documents").update({
+                    "parsedText": normalized_text,
+                    "processing_status": "parsed",
+                    "source_type": source_type,
+                    "last_processed": datetime.now().isoformat(),
+                    "in_vector_store": False,
+                    "error_message": None
+                }).eq("id", docid).execute()
+
+                background_executor.submit(
+                    _process_document_background,
+                    docid,
+                    collection_name,
+                    source_type,
+                    extra_metadata
+                )
+
+                processing_time = time.time() - start_time
+
+                return jsonify({
+                    "message": f"Text stored successfully in {processing_time:.2f}s",
+                    "docid": docid,
+                    "collection_name": collection_name,
+                    "source_type": source_type,
+                    "text_length": len(normalized_text),
+                    "processing_status": "parsed",
+                    "background_processing": "started",
+                    "embedding_dimension": embedding_manager.get_dimension()
+                }), 200
+
+            except Exception as e:
+                logger.exception(f"Text upload error: {str(e)}")
                 return jsonify({"error": str(e)}), 500
         
         @app.route('/chunk', methods=['POST'])
@@ -3362,6 +3576,36 @@ def create_app():
                     }), 500
                 
             except Exception as e:
+                return jsonify({"status": "error", "error": str(e)}), 500
+
+        @app.route('/collections/<collection_name>/documents/delete', methods=['POST'])
+        def delete_documents_by_id(collection_name):
+            """Delete one or more documents from a collection and remove their vector chunks."""
+            try:
+                data = request.get_json() or {}
+                user_id = data.get('user_id')
+
+                document_ids = data.get('document_ids')
+                if document_ids is None and data.get('document_id') is not None:
+                    document_ids = [data.get('document_id')]
+
+                if not isinstance(document_ids, list) or not document_ids:
+                    return jsonify({
+                        "status": "error",
+                        "error": "document_ids must be a non-empty array"
+                    }), 400
+
+                result = _delete_documents_from_collection(
+                    collection_name=collection_name,
+                    document_ids=document_ids,
+                    user_id=user_id
+                )
+
+                status_code = result.pop("status_code", 200)
+                return jsonify(result), status_code
+
+            except Exception as e:
+                logger.error(f"Error deleting documents from collection {collection_name}: {e}")
                 return jsonify({"status": "error", "error": str(e)}), 500
 
 
