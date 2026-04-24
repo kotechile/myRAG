@@ -2129,6 +2129,88 @@ def _delete_documents_from_collection(collection_name: str, document_ids: List[s
         "failed_documents": failed_deletions,
         "status_code": status_code
     }
+
+
+def _resolve_collection_record(collection_name: str) -> Dict[str, Any]:
+    """Find a collection row by name, supporting legacy table naming."""
+    candidate_tables = ["lindex_collections", "llm_collections"]
+    errors = []
+
+    for table_name in candidate_tables:
+        try:
+            response = supabase.table(table_name).select("id, name").eq("name", collection_name).limit(1).execute()
+            if response.data:
+                return {
+                    "table_name": table_name,
+                    "record": response.data[0]
+                }
+        except Exception as e:
+            errors.append(f"{table_name}: {e}")
+
+    raise ValueError(
+        f"Collection '{collection_name}' not found in supported collection tables. "
+        f"Checked: {', '.join(candidate_tables)}. Errors: {' | '.join(errors) if errors else 'none'}"
+    )
+
+
+def _delete_collection(collection_name: str) -> Dict[str, Any]:
+    """Delete a collection from the vector store and collection metadata tables."""
+    normalized_name = str(collection_name).strip()
+    if not normalized_name:
+        return {
+            "status": "error",
+            "error": "collection_name is required",
+            "status_code": 400
+        }
+
+    try:
+        collection_info = _resolve_collection_record(normalized_name)
+    except ValueError as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "status_code": 404
+        }
+
+    collection_table = collection_info["table_name"]
+    collection_record = collection_info["record"]
+    collection_id = collection_record["id"]
+
+    docs_response = supabase.table("lindex_documents").select("id").eq("collectionId", collection_id).execute()
+    documents_in_collection = docs_response.data or []
+
+    deleted_documents_count = 0
+    if documents_in_collection:
+        delete_docs_response = supabase.table("lindex_documents").delete().eq("collectionId", collection_id).execute()
+        deleted_documents_count = len(delete_docs_response.data or [])
+
+    supabase.table(collection_table).delete().eq("id", collection_id).execute()
+
+    vecs_client = None
+    vector_collection_deleted = False
+    try:
+        vecs_client = vecs.create_client(DB_CONNECTION)
+        vecs_client.delete_collection(normalized_name)
+        vector_collection_deleted = True
+    except CollectionNotFound:
+        logger.warning(f"⚠️ Vector collection '{normalized_name}' was not found during deletion")
+    finally:
+        if vecs_client is not None:
+            vecs_client.disconnect()
+
+    _engines.pop(normalized_name, None)
+
+    return {
+        "status": "success",
+        "collection_name": normalized_name,
+        "collection_id": collection_id,
+        "collection_table": collection_table,
+        "deleted_documents_count": deleted_documents_count,
+        "documents_found_in_collection": len(documents_in_collection),
+        "vector_collection_deleted": vector_collection_deleted,
+        "engine_cache_cleared": True,
+        "status_code": 200
+    }
 ## ******************>
 def _execute_async_query(job_id, data):
     """Execute query in background with status updates supporting all methods."""
@@ -3606,6 +3688,27 @@ def create_app():
 
             except Exception as e:
                 logger.error(f"Error deleting documents from collection {collection_name}: {e}")
+                return jsonify({"status": "error", "error": str(e)}), 500
+
+        @app.route('/collections/delete', methods=['POST'])
+        def delete_collection_by_name():
+            """Delete a collection from the metadata table and vector store."""
+            try:
+                data = request.get_json() or {}
+                collection_name = data.get('collection_name')
+
+                if not collection_name:
+                    return jsonify({
+                        "status": "error",
+                        "error": "collection_name is required"
+                    }), 400
+
+                result = _delete_collection(collection_name)
+                status_code = result.pop("status_code", 200)
+                return jsonify(result), status_code
+
+            except Exception as e:
+                logger.error(f"Error deleting collection: {e}")
                 return jsonify({"status": "error", "error": str(e)}), 500
 
 
