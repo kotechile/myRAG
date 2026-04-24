@@ -21,6 +21,7 @@ from dotenv import load_dotenv, find_dotenv
 from supabase import create_client
 import vecs
 from vecs.exc import CollectionNotFound
+from psycopg2 import OperationalError
 
 # LlamaIndex imports
 from llama_index.core import Settings, VectorStoreIndex, StorageContext, SimpleDirectoryReader
@@ -2173,6 +2174,53 @@ def _resolve_collection_record(collection_name: str) -> Dict[str, Any]:
     )
 
 
+def _get_candidate_vector_db_connections() -> List[str]:
+    """Return candidate database connections for vecs operations."""
+    candidates = []
+    for value in [os.getenv("DB_CONNECTION"), os.getenv("DB_CONNECTION2"), DB_CONNECTION]:
+        if value and value not in candidates:
+            candidates.append(value)
+    return candidates
+
+
+def _delete_vector_collection(collection_name: str) -> Dict[str, Any]:
+    """Delete a vecs collection, trying available DB connections."""
+    last_error = None
+
+    for connection_string in _get_candidate_vector_db_connections():
+        vecs_client = None
+        try:
+            vecs_client = vecs.create_client(connection_string)
+            vecs_client.delete_collection(collection_name)
+            return {
+                "deleted": True,
+                "collection_missing": False,
+                "connection_string": connection_string
+            }
+        except CollectionNotFound:
+            return {
+                "deleted": False,
+                "collection_missing": True,
+                "connection_string": connection_string
+            }
+        except OperationalError as e:
+            last_error = e
+            logger.error(
+                f"❌ Vecs connection failed for collection '{collection_name}' "
+                f"using configured DB connection: {e}"
+            )
+        except Exception as e:
+            last_error = e
+            logger.error(f"❌ Unexpected vecs deletion error for '{collection_name}': {e}")
+        finally:
+            if vecs_client is not None:
+                vecs_client.disconnect()
+
+    raise RuntimeError(
+        f"Unable to connect to the vector database to delete collection '{collection_name}': {last_error}"
+    )
+
+
 def _delete_collection(collection_name: str) -> Dict[str, Any]:
     """Delete a collection from the vector store and collection metadata tables."""
     normalized_name = str(collection_name).strip()
@@ -2196,6 +2244,18 @@ def _delete_collection(collection_name: str) -> Dict[str, Any]:
     collection_record = collection_info["record"]
     collection_id = collection_record["id"]
 
+    try:
+        vector_delete_result = _delete_vector_collection(normalized_name)
+    except RuntimeError as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "collection_name": normalized_name,
+            "collection_id": collection_id,
+            "collection_table": collection_table,
+            "status_code": 503
+        }
+
     docs_response = supabase.table("lindex_documents").select("id").eq("collectionId", collection_id).execute()
     documents_in_collection = docs_response.data or []
 
@@ -2206,19 +2266,10 @@ def _delete_collection(collection_name: str) -> Dict[str, Any]:
 
     supabase.table(collection_table).delete().eq("id", collection_id).execute()
 
-    vecs_client = None
-    vector_collection_deleted = False
-    try:
-        vecs_client = vecs.create_client(DB_CONNECTION)
-        vecs_client.delete_collection(normalized_name)
-        vector_collection_deleted = True
-    except CollectionNotFound:
-        logger.warning(f"⚠️ Vector collection '{normalized_name}' was not found during deletion")
-    finally:
-        if vecs_client is not None:
-            vecs_client.disconnect()
-
     _engines.pop(normalized_name, None)
+
+    if vector_delete_result["collection_missing"]:
+        logger.warning(f"⚠️ Vector collection '{normalized_name}' was not found during deletion")
 
     return {
         "status": "success",
@@ -2227,7 +2278,8 @@ def _delete_collection(collection_name: str) -> Dict[str, Any]:
         "collection_table": collection_table,
         "deleted_documents_count": deleted_documents_count,
         "documents_found_in_collection": len(documents_in_collection),
-        "vector_collection_deleted": vector_collection_deleted,
+        "vector_collection_deleted": vector_delete_result["deleted"],
+        "vector_collection_missing": vector_delete_result["collection_missing"],
         "engine_cache_cleared": True,
         "status_code": 200
     }
