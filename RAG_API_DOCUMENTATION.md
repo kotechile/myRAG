@@ -3,7 +3,7 @@
 This guide details how to interact with the deployed RAG system API.
 
 ## Base URL
-When deployed on Coolify, your API will be accessible at the endpoint provided in the Coolify dashboard (e.g., `https://rag-system.your-domain.com`).
+When deployed on Coolify, your API will be accessible at the endpoint provided in the Coolify dashboard (e.g., `https://rag.buildomain.com`).
 If you haven't configured a domain, it might be `http://<vps-ip>:8081` (depending on your port mapping).
 
 > [!WARNING]
@@ -121,7 +121,7 @@ class RagClient:
         return response.json()
 
 # Usage
-client = RagClient("https://rag-system.your-domain.com")
+client = RagClient("https://rag.buildomain.com")
 print(client.health())
 print(client.query("Summarize the Q3 report", collection="financials"))
 ```

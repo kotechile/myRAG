@@ -2,11 +2,14 @@
 import requests
 import sys
 
-BASE_URL = "https://rag.aichieve.net"
+BASE_URL = "https://rag.buildomain.com"
 # BASE_URL = "http://localhost:8080"
 
 def check_endpoint(endpoint):
-    url = f"{BASE_URL}{endpoint}"
+    if endpoint.startswith("http"):
+        url = endpoint
+    else:
+        url = f"{BASE_URL}{endpoint}"
     print(f"Checking {url}...", end=" ", flush=True)
     try:
         # Disable SSL verification for testing
@@ -35,7 +38,7 @@ def main():
     
     endpoints = [
         "/",  # Root might show status or 404 depending on app
-        "http://rag.aichieve.net/health", # Check if HTTP is working (ACME challenge path)
+        "http://rag.buildomain.com/health", # Check if HTTP is working (ACME challenge path)
         "/health",  # Unconditional health check
         "/query_hybrid_enhanced/health",
         "/query_hybrid_enhanced/status", 

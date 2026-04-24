@@ -11,7 +11,7 @@ This guide explains how to deploy the RAG System using Coolify on a Hostinger VP
 
 2.  **Configuration**:
     *   Coolify will automatically detect the `docker-compose.yml`.
-    *   Ensure the **Domains** section is configured (e.g., `https://api.yourdomain.com`).
+    *   Ensure the **Domains** section is configured (e.g., `https://rag.buildomain.com`).
     *   Port 8080 is exposed by default.
 
 3.  **Environment Variables**:
@@ -228,4 +228,3 @@ For issues or questions, check:
 - Application logs: `docker-compose logs -f`
 - Container status: `docker-compose ps`
 - Health endpoint: `curl http://localhost:8080/health`
-
