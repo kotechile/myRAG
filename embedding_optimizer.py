@@ -215,12 +215,17 @@ class OptimizedOpenAIEmbedding(BaseEmbedding):
                  optimizer: Optional[CombinedOptimizer] = None,
                  embed_batch_size: int = 10,
                  **kwargs):
+
+        # OpenAIEmbedding still accepts transport/auth kwargs like api_key, but
+        # BaseEmbedding/Pydantic no longer allows those extra fields. Keep them
+        # only on the wrapped model instance instead of forwarding them to super().
+        openai_kwargs = dict(kwargs)
         
         # Create the base model
         base_model = OpenAIEmbedding(
             model=model, 
             embed_batch_size=embed_batch_size,
-            **kwargs
+            **openai_kwargs
         )
         
         # Initialize the parent class properly
@@ -230,7 +235,6 @@ class OptimizedOpenAIEmbedding(BaseEmbedding):
             optimizer=optimizer,
             base_model_instance=base_model,
             dimension_cache=None,
-            **kwargs
         )
         
         logger.info(f"🔧 OptimizedOpenAIEmbedding created with model: {model}")
