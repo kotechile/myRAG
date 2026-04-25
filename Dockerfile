@@ -30,7 +30,7 @@ COPY requirements.txt .
 
 # Upgrade pip and install Python dependencies
 RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -v -r requirements.txt
 
 # Create a non-root user
 RUN addgroup --system appgroup && adduser --system --group appuser
