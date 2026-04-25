@@ -28,7 +28,7 @@ Pillow
 # torch is REMOVED to save space/time (only needed for heavy inference)
 openai>=1.30.0
 numpy
-scikit-learn
+scikit-learn==1.6.1
 joblib
 transformers>=4.41.2
 tiktoken
