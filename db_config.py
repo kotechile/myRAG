@@ -87,6 +87,8 @@ def get_llm_config(provider_name: str = None, model_name: str = None) -> Optiona
 
     try:
         normalized_provider = normalize_provider_name(provider_name)
+        selector_model_name = provider_name.strip().lower() if provider_name else None
+        requested_model_name = model_name.strip().lower() if model_name else None
 
         # Query llm_providers
         # We want active providers.
@@ -101,11 +103,20 @@ def get_llm_config(provider_name: str = None, model_name: str = None) -> Optiona
         result = query.execute()
         
         provider_rows = result.data or []
-        if normalized_provider:
-            provider_rows = [
-                row for row in provider_rows
-                if normalize_provider_name(row.get("provider")) == normalized_provider
-            ]
+        if normalized_provider or selector_model_name or requested_model_name:
+            filtered_rows = []
+            for row in provider_rows:
+                row_provider = normalize_provider_name(row.get("provider"))
+                row_model_name = (row.get("model_name") or "").strip().lower()
+
+                provider_match = normalized_provider and row_provider == normalized_provider
+                selector_model_match = selector_model_name and row_model_name == selector_model_name
+                requested_model_match = requested_model_name and row_model_name == requested_model_name
+
+                if provider_match or selector_model_match or requested_model_match:
+                    filtered_rows.append(row)
+
+            provider_rows = filtered_rows
 
         if not provider_rows:
             logger.warning(f"No active LLM provider found matching: provider={provider_name}, model={model_name}")
