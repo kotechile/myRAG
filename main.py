@@ -188,6 +188,19 @@ class EmbeddingModelManager:
             enabled,
         )
         return enabled
+
+    def _is_prebuilt_optimizer_required(self) -> bool:
+        """Check whether startup must load a prebuilt optimizer instead of fitting one."""
+        raw_value = os.getenv("REQUIRE_PREBUILT_OPTIMIZER", "false")
+        normalized_value = str(raw_value).strip().strip("'\"").lower()
+        required = normalized_value in {"true", "1", "yes", "on"}
+        logger.info(
+            "🔍 REQUIRE_PREBUILT_OPTIMIZER raw=%r normalized=%r required=%s",
+            raw_value,
+            normalized_value,
+            required,
+        )
+        return required
         
     def get_model(self):
         """Get the embedding model, creating it if necessary."""
@@ -204,10 +217,12 @@ class EmbeddingModelManager:
     def _create_embedding_model(self):
         """Create the appropriate embedding model."""
         use_optimization = self._is_optimization_enabled()
+        require_prebuilt_optimizer = self._is_prebuilt_optimizer_required()
         optimizer_path = "optimizer_128d_int8.joblib"
         logger.info(
-            "🔍 Embedding model setup: use_optimization=%s cwd=%s optimizer_path=%s exists=%s",
+            "🔍 Embedding model setup: use_optimization=%s require_prebuilt_optimizer=%s cwd=%s optimizer_path=%s exists=%s",
             use_optimization,
+            require_prebuilt_optimizer,
             os.getcwd(),
             optimizer_path,
             os.path.exists(optimizer_path),
@@ -233,6 +248,10 @@ class EmbeddingModelManager:
                     logger.info(f"✅ Loaded optimizer: {optimizer.target_dim}D + {optimizer.quantization}")
                     return embed_model
                 else:
+                    if require_prebuilt_optimizer:
+                        raise RuntimeError(
+                            f"Prebuilt optimizer is required but missing at {optimizer_path}"
+                        )
                     logger.warning(
                         "⚠️ Optimizer file not found at startup; creating an unfitted optimizer at %s",
                         optimizer_path,
