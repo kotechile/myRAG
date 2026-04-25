@@ -17,6 +17,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
+import db_config
 
 # Import Manus research configuration
 try:
@@ -788,8 +789,12 @@ class MultiSourceResearcher:
         self.llm = None
         try:
             from llm_provider import LLMProviderFactory
-            self.llm = LLMProviderFactory.get_llm_instance(llm_provider)
-            self.logger.info(f"✅ LLM initialized ({llm_provider}) for gap consolidation")
+            llm_config = db_config.get_llm_config(provider_name=llm_provider)
+            if llm_config and llm_config.get("api_key"):
+                self.llm = LLMProviderFactory.get_llm_instance(**llm_config)
+                self.logger.info(f"✅ LLM initialized ({llm_provider}) for gap consolidation")
+            else:
+                self.logger.warning(f"⚠️ No DB-backed LLM config found for gap consolidation provider '{llm_provider}'")
         except Exception as e:
             self.logger.warning(f"⚠️ LLM not available for gap consolidation: {e}")
         

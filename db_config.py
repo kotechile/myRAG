@@ -3,13 +3,47 @@ import os
 import logging
 from dotenv import load_dotenv, find_dotenv
 from supabase import create_client, Client
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 # Load environment variables
 load_dotenv(find_dotenv())
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+PROVIDER_ALIASES = {
+    "google": "gemini",
+    "gemini": "gemini",
+    "anthropic": "claude",
+    "claude": "claude",
+    "open": "openai",
+    "openai": "openai",
+    "deepseek": "deepseek",
+}
+
+
+def normalize_provider_name(provider_name: Optional[str]) -> Optional[str]:
+    """Normalize provider naming differences between DB rows and runtime adapters."""
+    if not provider_name:
+        return provider_name
+    return PROVIDER_ALIASES.get(provider_name.strip().lower(), provider_name.strip().lower())
+
+
+def get_provider_search_candidates(provider_name: Optional[str]) -> List[str]:
+    """Return provider aliases that should be searched in the DB."""
+    normalized = normalize_provider_name(provider_name)
+    if not normalized:
+        return []
+
+    candidates = {normalized}
+    if normalized == "openai":
+        candidates.add("open")
+    elif normalized == "claude":
+        candidates.add("anthropic")
+    elif normalized == "gemini":
+        candidates.add("google")
+
+    return list(candidates)
 
 # Supabase Configuration
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -52,12 +86,11 @@ def get_llm_config(provider_name: str = None, model_name: str = None) -> Optiona
         return None
 
     try:
+        normalized_provider = normalize_provider_name(provider_name)
+
         # Query llm_providers
         # We want active providers.
         query = supabase.table("llm_providers").select("*").eq("is_active", True)
-
-        if provider_name:
-            query = query.ilike("provider", provider_name)
         
         if model_name:
             query = query.eq("model_name", model_name)
@@ -67,12 +100,19 @@ def get_llm_config(provider_name: str = None, model_name: str = None) -> Optiona
         
         result = query.execute()
         
-        if not result.data:
+        provider_rows = result.data or []
+        if normalized_provider:
+            provider_rows = [
+                row for row in provider_rows
+                if normalize_provider_name(row.get("provider")) == normalized_provider
+            ]
+
+        if not provider_rows:
             logger.warning(f"No active LLM provider found matching: provider={provider_name}, model={model_name}")
             return None
             
         # Iterate through providers to find one with a valid key
-        for provider_config in result.data:
+        for provider_config in provider_rows:
             # Extract API key ID (Fixed: column is api_keys_id, not api_key)
             api_key_id = provider_config.get("api_keys_id")
             api_key_data = None
@@ -90,18 +130,21 @@ def get_llm_config(provider_name: str = None, model_name: str = None) -> Optiona
                 # 2. Fallback: Try fetching by provider name
                 provider_type = provider_config.get("provider")
                 if provider_type:
-                    # Map 'google' to 'gemini' if needed (based on api_keys screenshot)
-                    provider_search = provider_type.lower()
-                    if provider_search == "google":
-                        provider_search = "gemini"
-                    
-                    try:
-                        key_result = supabase.table("api_keys").select("*").ilike("provider", provider_search).eq("is_active", True).execute()
-                        if key_result.data:
-                            # Use the first active key found for this provider
-                            api_key_data = key_result.data[0]
-                    except Exception as e_name:
-                        logger.warning(f"Error fetching key by provider name {provider_search}: {e_name}")
+                    for provider_search in get_provider_search_candidates(provider_type):
+                        try:
+                            key_result = (
+                                supabase.table("api_keys")
+                                .select("*")
+                                .ilike("provider", provider_search)
+                                .eq("is_active", True)
+                                .execute()
+                            )
+                            if key_result.data:
+                                # Use the first active key found for this provider
+                                api_key_data = key_result.data[0]
+                                break
+                        except Exception as e_name:
+                            logger.warning(f"Error fetching key by provider name {provider_search}: {e_name}")
 
             if not api_key_data or not api_key_data.get("key_value"):
                 logger.warning(f"No valid API key found for provider {provider_config.get('name')}. provider_config: {provider_config}. api_key_data: {api_key_data}")
@@ -112,7 +155,7 @@ def get_llm_config(provider_name: str = None, model_name: str = None) -> Optiona
                     
             # Found a valid config!
             config = {
-                "provider": provider_config.get("provider"), # Fixed: column is provider, not provider_type
+                "provider": normalize_provider_name(provider_config.get("provider")),
                 "model": provider_config.get("model_name"),
                 "api_key": api_key_data.get("key_value"),
                 "temperature": provider_config.get("temperature"),
@@ -153,10 +196,10 @@ def get_api_key(provider_name: str) -> Optional[str]:
         return None
         
     try:
-        # First try matching 'provider' column
-        result = supabase.table("api_keys").select("key_value").ilike("provider", provider_name).execute()
-        if result.data:
-            return result.data[0].get("key_value")
+        for candidate in get_provider_search_candidates(provider_name):
+            result = supabase.table("api_keys").select("key_value").ilike("provider", candidate).execute()
+            if result.data:
+                return result.data[0].get("key_value")
             
         # Fallback to matching 'name' column
         result = supabase.table("api_keys").select("key_value").ilike("name", f"%{provider_name}%").execute()

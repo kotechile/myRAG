@@ -61,6 +61,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SUPABASE_DATABASE_PASSWORD = os.getenv("SUPABASE_DATABASE_PASSWORD")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 
 # Database configuration
 DB_CONNECTION = os.getenv("DB_CONNECTION") or f"postgresql://postgres.dgcsqiaciyqvprtpopxg:{SUPABASE_DATABASE_PASSWORD}@aws-0-us-west-1.pooler.supabase.com:5432/postgres"
@@ -100,6 +101,17 @@ except ImportError as e:
     AGENTS_AVAILABLE = False
 jobs: Dict[str, Dict[str, Any]] = {}
 job_lock = threading.Lock()  # Thread-safe access to jobs dictionary
+
+
+def get_runtime_llm_config(provider_name: str = DEFAULT_LLM_PROVIDER) -> Dict[str, Any]:
+    """Load the provider config, including API key, from the DB-backed configuration."""
+    llm_config = db_config.get_llm_config(provider_name=provider_name)
+    if not llm_config or not llm_config.get("api_key"):
+        raise ValueError(
+            f"No API-backed configuration found for provider '{provider_name}'. "
+            "Check llm_providers.api_keys_id and api_keys.key_value."
+        )
+    return llm_config
 
 
 def cleanup_old_jobs(max_age_seconds: int = 3600):
@@ -195,7 +207,8 @@ class EmbeddingModelManager:
                 if os.path.exists(optimizer_path):
                     optimizer = CombinedOptimizer.load(optimizer_path)
                     embed_model = OptimizedOpenAIEmbedding(
-                        model="text-embedding-3-small",
+                        api_key=db_config.get_api_key("openai") or OPENAI_API_KEY,
+                        model=OPENAI_EMBEDDING_MODEL,
                         optimizer=optimizer,
                         embed_batch_size=10
                     )
@@ -205,7 +218,8 @@ class EmbeddingModelManager:
                 else:
                     optimizer = create_128d_int8_optimizer()
                     embed_model = OptimizedOpenAIEmbedding(
-                        model="text-embedding-3-small",
+                        api_key=db_config.get_api_key("openai") or OPENAI_API_KEY,
+                        model=OPENAI_EMBEDDING_MODEL,
                         optimizer=optimizer,
                         embed_batch_size=10
                     )
@@ -219,7 +233,11 @@ class EmbeddingModelManager:
         # Fallback to standard embeddings
         logger.info("📐 Using standard OpenAI embeddings (1536D)")
         self._fitted = True
-        return OpenAIEmbedding(model="text-embedding-3-small", embed_batch_size=10)
+        return OpenAIEmbedding(
+            api_key=db_config.get_api_key("openai") or OPENAI_API_KEY,
+            model=OPENAI_EMBEDDING_MODEL,
+            embed_batch_size=10
+        )
     
     def _detect_dimension(self):
         """Detect the embedding dimension dynamically."""
@@ -399,7 +417,7 @@ class SimpleRAGEngine:
         
         try:
             # Get LLM
-            llm_adapter = LLMProviderFactory.get_adapter(llm_provider)
+            llm_adapter = LLMProviderFactory.get_adapter(**get_runtime_llm_config(llm_provider))
             llm_instance = llm_adapter.get_llm_instance()
             
             # Perform similarity search with more results to allow for reranking
@@ -766,7 +784,7 @@ class SimpleRAGEngine:
         logger.info(f"🔄 Iterative agentic query: {query}")
         try:
             # Get LLM
-            llm_adapter = LLMProviderFactory.get_adapter(llm_provider)
+            llm_adapter = LLMProviderFactory.get_adapter(**get_runtime_llm_config(llm_provider))
             llm_instance = llm_adapter.get_llm_instance()
             agent_llm = llm_adapter.get_llm_instance()
             
@@ -974,7 +992,7 @@ class SimpleRAGEngine:
         
         try:
             # Get LLM
-            llm_adapter = LLMProviderFactory.get_adapter(llm_provider)
+            llm_adapter = LLMProviderFactory.get_adapter(**get_runtime_llm_config(llm_provider))
             llm_instance = llm_adapter.get_llm_instance()
             agent_llm = llm_adapter.get_llm_instance()
             
@@ -1191,7 +1209,7 @@ class SimpleRAGEngine:
         
         try:
             # Get LLM
-            llm_adapter = LLMProviderFactory.get_adapter(llm_provider)
+            llm_adapter = LLMProviderFactory.get_adapter(**get_runtime_llm_config(llm_provider))
             llm_instance = llm_adapter.get_llm_instance()
             
             # Perform retrieval - simplified without ThreadPoolExecutor for simple queries
@@ -1407,7 +1425,7 @@ class SimpleRAGEngine:
                 }
             
             # Get LLM instance for agent
-            llm_adapter = LLMProviderFactory.get_adapter(llm_provider)
+            llm_adapter = LLMProviderFactory.get_adapter(**get_runtime_llm_config(llm_provider))
             
             # ENHANCED: Better LLM settings for multi-tool usage
             if verbose_mode == "concise":
@@ -2484,10 +2502,17 @@ def create_app():
         def add_cors_headers(response):
             """Add permissive CORS headers so browser clients can call the API."""
             origin = request.headers.get('Origin')
+            requested_headers = request.headers.get('Access-Control-Request-Headers')
             response.headers['Access-Control-Allow-Origin'] = origin or '*'
             response.headers['Vary'] = 'Origin'
-            response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+            response.headers['Access-Control-Allow-Headers'] = (
+                requested_headers
+                if requested_headers
+                else 'Content-Type, Authorization, X-Requested-With'
+            )
             response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PATCH, DELETE, OPTIONS'
+            response.headers['Access-Control-Max-Age'] = '86400'
             return response
 
         @app.route('/collections/delete', methods=['OPTIONS'])
