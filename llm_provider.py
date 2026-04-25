@@ -104,7 +104,7 @@ class DeepSeekAdapter(LLMAdapter):
 
 
 class GeminiAdapter(LLMAdapter):
-    """Adapter for Google's Gemini LLM."""
+    """Adapter for Google's Gemini LLM via Google GenAI."""
     
     def __init__(self, api_key: str, model: str = "gemini-2.0-flash", **kwargs):
         self.api_key = api_key
@@ -112,18 +112,17 @@ class GeminiAdapter(LLMAdapter):
         self.kwargs = kwargs
         self._tokenizer = None
         logger.info(f"GEMINI ADAPTER SELECTED")
-        # Import Gemini
-        # Import Gemini
+        # Import Google GenAI-backed LlamaIndex adapter
         try:
-            from llama_index.llms.gemini import Gemini
-            self.Gemini = Gemini
+            from llama_index.llms.google_genai import GoogleGenAI
+            self.Gemini = GoogleGenAI
         except ImportError:
-            logger.error("Gemini module not found. Please install with: pip install llama-index-llms-gemini")
+            logger.error("Google GenAI module not found. Please install with: pip install llama-index-llms-google-genai")
             self.Gemini = None
     
     def get_llm_instance(self):
         if self.Gemini is None:
-            raise ImportError("Gemini module not found. Please install with: pip install llama-index-llms-gemini")
+            raise ImportError("Google GenAI module not found. Please install with: pip install llama-index-llms-google-genai")
             
         return self.Gemini(
             api_key=self.api_key,
