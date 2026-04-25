@@ -177,7 +177,16 @@ class EmbeddingModelManager:
 
     def _is_optimization_enabled(self) -> bool:
         """Check whether optimized embeddings are required."""
-        return os.getenv("USE_EMBEDDING_OPTIMIZATION", "false").lower() == "true"
+        raw_value = os.getenv("USE_EMBEDDING_OPTIMIZATION", "false")
+        normalized_value = str(raw_value).strip().strip("'\"").lower()
+        enabled = normalized_value in {"true", "1", "yes", "on"}
+        logger.info(
+            "🔍 USE_EMBEDDING_OPTIMIZATION raw=%r normalized=%r enabled=%s",
+            raw_value,
+            normalized_value,
+            enabled,
+        )
+        return enabled
         
     def get_model(self):
         """Get the embedding model, creating it if necessary."""
@@ -194,6 +203,14 @@ class EmbeddingModelManager:
     def _create_embedding_model(self):
         """Create the appropriate embedding model."""
         use_optimization = self._is_optimization_enabled()
+        optimizer_path = "optimizer_128d_int8.joblib"
+        logger.info(
+            "🔍 Embedding model setup: use_optimization=%s cwd=%s optimizer_path=%s exists=%s",
+            use_optimization,
+            os.getcwd(),
+            optimizer_path,
+            os.path.exists(optimizer_path),
+        )
         
         if use_optimization:
             if not OPTIMIZATION_AVAILABLE:
@@ -203,7 +220,6 @@ class EmbeddingModelManager:
 
             logger.info("🔧 Creating optimized embedding model...")
             try:
-                optimizer_path = "optimizer_128d_int8.joblib"
                 if os.path.exists(optimizer_path):
                     optimizer = CombinedOptimizer.load(optimizer_path)
                     embed_model = OptimizedOpenAIEmbedding(
@@ -216,6 +232,10 @@ class EmbeddingModelManager:
                     logger.info(f"✅ Loaded optimizer: {optimizer.target_dim}D + {optimizer.quantization}")
                     return embed_model
                 else:
+                    logger.warning(
+                        "⚠️ Optimizer file not found at startup; creating an unfitted optimizer at %s",
+                        optimizer_path,
+                    )
                     optimizer = create_128d_int8_optimizer()
                     embed_model = OptimizedOpenAIEmbedding(
                         api_key=db_config.get_api_key("openai") or OPENAI_API_KEY,
