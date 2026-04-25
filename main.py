@@ -2,6 +2,7 @@
 
 import os
 import time
+import errno
 import logging
 import threading
 import gc
@@ -293,8 +294,42 @@ class EmbeddingModelManager:
     def ensure_optimizer_fitted(self):
         """Ensure the optimizer is fitted if using optimization."""
         model = self.get_model()
+        optimizer_path = "optimizer_128d_int8.joblib"
+        lock_path = f"{optimizer_path}.lock"
         
         if hasattr(model, 'optimizer') and model.optimizer and not model.optimizer.fitted:
+            if os.path.exists(optimizer_path):
+                logger.info("📁 Found existing optimizer file; loading %s", optimizer_path)
+                model.optimizer = CombinedOptimizer.load(optimizer_path)
+                self._fitted = model.optimizer.fitted
+                self._dimension = None
+                return
+
+            lock_fd = None
+            try:
+                lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(lock_fd, str(os.getpid()).encode("utf-8"))
+                logger.info("🔐 Acquired optimizer fit lock: %s", lock_path)
+            except OSError as exc:
+                if exc.errno != errno.EEXIST:
+                    raise
+
+                logger.info("⏳ Another worker is fitting the optimizer; waiting for %s", optimizer_path)
+                waited_seconds = 0
+                while waited_seconds < 120:
+                    if os.path.exists(optimizer_path):
+                        logger.info("📁 Loading optimizer after wait: %s", optimizer_path)
+                        model.optimizer = CombinedOptimizer.load(optimizer_path)
+                        self._fitted = model.optimizer.fitted
+                        self._dimension = None
+                        return
+                    time.sleep(1)
+                    waited_seconds += 1
+
+                raise RuntimeError(
+                    f"Timed out waiting for fitted optimizer to appear at {optimizer_path}"
+                )
+
             logger.info("🔧 Fitting optimizer with sample texts...")
             
             sample_texts = [
@@ -312,13 +347,17 @@ class EmbeddingModelManager:
                 logger.info("✅ Optimizer fitted successfully")
                 
                 # Save the fitted optimizer
-                optimizer_path = "optimizer_128d_int8.joblib"
                 model.optimizer.save(optimizer_path)
                 logger.info(f"💾 Fitted optimizer saved to {optimizer_path}")
                 
             except Exception as e:
                 logger.error(f"❌ Failed to fit optimizer: {e}")
                 raise
+            finally:
+                if lock_fd is not None:
+                    os.close(lock_fd)
+                    if os.path.exists(lock_path):
+                        os.unlink(lock_path)
 
 # Initialize global embedding manager
 embedding_manager = EmbeddingModelManager()

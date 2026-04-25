@@ -3,6 +3,7 @@
 import os
 import logging
 import joblib
+import tempfile
 import numpy as np
 from typing import List, Optional, Union, Any, TYPE_CHECKING
 from pydantic import Field
@@ -179,8 +180,19 @@ class CombinedOptimizer(BaseEstimator, TransformerMixin):
         """Save the fitted optimizer."""
         if not self.fitted:
             raise ValueError("Cannot save unfitted optimizer")
-            
-        joblib.dump(self, filepath)
+
+        target_dir = os.path.dirname(filepath) or "."
+        os.makedirs(target_dir, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=target_dir, delete=False, suffix=".joblib") as tmp_file:
+            temp_path = tmp_file.name
+
+        try:
+            joblib.dump(self, temp_path)
+            os.replace(temp_path, filepath)
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
         logger.info(f"💾 Optimizer saved to {filepath}")
     
     @classmethod
@@ -325,11 +337,19 @@ class OptimizedOpenAIEmbedding(BaseEmbedding):
             
         logger.info(f"🔧 Fitting optimizer with {len(sample_texts)} sample texts...")
         
-        # Generate sample embeddings using base model
+        # Generate sample embeddings in batches to avoid one HTTP request per text.
+        batch_size = 20
         sample_embeddings = []
-        for text in sample_texts:
-            embedding = self.base_model.get_text_embedding(text)
-            sample_embeddings.append(embedding)
+        total_batches = (len(sample_texts) + batch_size - 1) // batch_size
+        for index in range(0, len(sample_texts), batch_size):
+            batch = sample_texts[index:index + batch_size]
+            batch_embeddings = self.base_model.get_text_embedding_batch(batch)
+            sample_embeddings.extend(batch_embeddings)
+            logger.info(
+                "   Processed optimizer batch %s/%s",
+                index // batch_size + 1,
+                total_batches,
+            )
         
         # Fit optimizer
         sample_array = np.array(sample_embeddings)
