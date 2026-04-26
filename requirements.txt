@@ -26,7 +26,8 @@ Pillow
 
 # AI/ML Core
 # torch is REMOVED to save space/time (only needed for heavy inference)
-openai>=1.30.0
+openai==2.32.0
+anthropic==0.97.0
 numpy
 scikit-learn==1.6.1
 joblib
@@ -36,16 +37,18 @@ matplotlib
 psutil
 
 # LlamaIndex Core
-llama-index
-llama-index-core
-llama-index-llms-deepseek
-llama-index-llms-anthropic
-llama-index-llms-google-genai
-llama-index-llms-openai
-llama-index-vector-stores-supabase
-llama-index-vector-stores-chroma
-llama-index-vector-stores-postgres
-llama-index-readers-llama-parse
+llama-index==0.14.16
+llama-index-core==0.14.21
+llama-index-embeddings-openai==0.5.2
+llama-index-llms-deepseek==0.3.0
+llama-index-llms-anthropic==0.11.3
+llama-index-llms-google-genai==0.6.2
+llama-index-llms-openai==0.6.26
+llama-index-vector-stores-supabase==0.5.0
+llama-index-vector-stores-chroma==0.5.5
+llama-index-vector-stores-postgres==0.8.1
+llama-index-readers-llama-parse==0.6.1
+llama-parse==0.5.20
 
 # Database & Storage
 supabase==2.5.0
