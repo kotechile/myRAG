@@ -2048,8 +2048,11 @@ def get_rag_engine(collection_name: str) -> SimpleRAGEngine:
 def _process_document_background(docid, collection_name, source_type="document", extra_metadata=None):
     """Background task for processing documents."""
     try:
+        collection_record = _ensure_collection_record(collection_name)
+
         supabase.table("lindex_documents").update({
-            "processing_status": "processing"
+            "processing_status": "processing",
+            "collectionId": collection_record["id"]
         }).eq("id", docid).execute()
         
         embedding_manager.ensure_optimizer_fitted()
@@ -2081,13 +2084,17 @@ def _process_document_background(docid, collection_name, source_type="document",
                 "last_processed": datetime.now().isoformat(),
                 "source_type": source_type,
                 "doc_size": doc_size,
-                "chunk_count": chunk_count
+                "chunk_count": chunk_count,
+                "collectionId": collection_record["id"]
             }).eq("id", docid).execute()
+
+            _refresh_collection_metadata_cache(collection_name)
         else:
             error_msg = result.get('error', 'Unknown error')
             supabase.table("lindex_documents").update({
                 "processing_status": "error",
-                "error_message": error_msg[:200]
+                "error_message": error_msg[:200],
+                "collectionId": collection_record["id"]
             }).eq("id", docid).execute()
             
     except Exception as e:
@@ -2269,6 +2276,37 @@ def _resolve_collection_record(collection_name: str) -> Dict[str, Any]:
         f"Collection '{collection_name}' not found in supported collection tables. "
         f"Checked: {', '.join(candidate_tables)}. Errors: {' | '.join(errors) if errors else 'none'}"
     )
+
+
+def _ensure_collection_record(collection_name: str) -> Dict[str, Any]:
+    """Ensure a collection metadata row exists and return it."""
+    normalized_name = str(collection_name or "").strip()
+    if not normalized_name:
+        raise ValueError("collection_name is required")
+
+    try:
+        return _resolve_collection_record(normalized_name)["record"]
+    except ValueError:
+        logger.info(f"📁 Creating collection metadata row for '{normalized_name}'")
+
+    insert_data = {
+        "name": normalized_name,
+        "description": f"Collection auto-created during document upload for '{normalized_name}'",
+        "created_at": datetime.now().isoformat()
+    }
+    try:
+        response = supabase.table("lindex_collections").insert(insert_data).execute()
+    except Exception as e:
+        logger.warning(
+            f"⚠️ Collection metadata insert raced or failed for '{normalized_name}': {e}. "
+            "Attempting to resolve existing record."
+        )
+        return _resolve_collection_record(normalized_name)["record"]
+
+    if response.data:
+        return response.data[0]
+
+    return _resolve_collection_record(normalized_name)["record"]
 
 
 def _get_candidate_vector_db_connections() -> List[str]:

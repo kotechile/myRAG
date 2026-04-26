@@ -5,6 +5,7 @@ from llama_index.core import VectorStoreIndex, StorageContext
 from llama_index.vector_stores.supabase import SupabaseVectorStore
 from typing import List, Dict, Optional, Tuple, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import vecs
 import time
 import logging
 from datetime import datetime
@@ -244,8 +245,22 @@ class EmbeddingPipeline:
             return self._vector_stores[cache_key]
             
         try:
-            # Try to connect to existing vector store first
-            logger.info(f"🔍 Attempting to connect to existing vector store: {collection_name}")
+            # Explicitly ensure the underlying vecs collection exists before
+            # constructing the higher-level LlamaIndex vector store wrapper.
+            logger.info(f"🔍 Ensuring vector collection exists: {collection_name} (dim: {dimension})")
+            vecs_client = None
+            try:
+                vecs_client = vecs.create_client(self.db_connection)
+                vecs_client.get_or_create_collection(
+                    name=collection_name,
+                    dimension=dimension
+                )
+                logger.info(f"✅ Vecs collection ready: {collection_name}")
+            finally:
+                if vecs_client is not None:
+                    vecs_client.disconnect()
+
+            logger.info(f"🔍 Connecting LlamaIndex vector store: {collection_name}")
             
             # Try to create vector store with compatibility handling
             try:
