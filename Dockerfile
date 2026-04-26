@@ -26,17 +26,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
-COPY requirements.txt requirements_pinned.txt ./
+COPY requirements.txt .
 
-# Prefer the pinned lockfile for reproducible Coolify builds.
+# Install the main requirements file with more resilient pip settings for Coolify.
 RUN pip install --upgrade pip && \
-    if [ -f requirements_pinned.txt ]; then \
-      echo "Installing from requirements_pinned.txt"; \
-      pip install --no-cache-dir --prefer-binary --retries 10 --timeout 120 -r requirements_pinned.txt; \
-    else \
-      echo "Installing from requirements.txt"; \
-      pip install --no-cache-dir --prefer-binary --retries 10 --timeout 120 -r requirements.txt; \
-    fi
+    pip install --no-cache-dir --prefer-binary --retries 10 --timeout 120 -r requirements.txt
 
 # Create a non-root user
 RUN addgroup --system appgroup && adduser --system --group appuser
