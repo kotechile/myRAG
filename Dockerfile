@@ -26,11 +26,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
-COPY requirements.txt .
+COPY requirements.txt requirements_coolify.txt ./
 
-# Install the main requirements file with verbose output so Coolify logs show the failing package.
+# Install from the deployment lockfile to avoid resolver blowups in Coolify.
 RUN pip install --upgrade pip setuptools wheel && \
-    pip install -v --no-cache-dir --prefer-binary --retries 10 --timeout 120 -r requirements.txt
+    pip install -v --no-cache-dir --prefer-binary --retries 10 --timeout 120 -r requirements_coolify.txt
 
 # Create a non-root user
 RUN addgroup --system appgroup && adduser --system --group appuser
