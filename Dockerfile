@@ -50,4 +50,4 @@ USER appuser
 
 # Run the application with Gunicorn on port 8080
 # Using create_app() factory pattern
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--access-logfile", "-", "--workers", "2", "--threads", "4", "--timeout", "120", "main:create_app()"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--access-logfile", "-", "--workers", "1", "--threads", "4", "--timeout", "120", "main:create_app()"]
