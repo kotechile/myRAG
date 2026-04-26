@@ -1,6 +1,7 @@
 # main.py - Clean RAG Application with Fixed Agent Support
 
 import os
+import tempfile
 import time
 import errno
 import logging
@@ -2559,15 +2560,27 @@ def create_app():
         memory_mb = memory_info.rss / 1024 / 1024
         logger.info(f"🧠 Memory usage: {memory_mb:.1f} MB")
         return memory_mb
+
+    def resolve_upload_folder(preferred_path: str) -> str:
+        """Choose a writable upload directory so app startup does not fail."""
+        candidate_paths = [preferred_path, os.path.join(tempfile.gettempdir(), "rag-uploads")]
+
+        for path in candidate_paths:
+            try:
+                os.makedirs(path, exist_ok=True)
+                logger.info("📁 Using upload folder: %s", path)
+                return path
+            except OSError as exc:
+                logger.warning("⚠️ Could not prepare upload folder %s: %s", path, exc)
+
+        raise RuntimeError("No writable upload directory available for the Flask app")
     
     try:
         logger.info("🚀 Starting Flask application creation...")
         log_memory_usage()
         app = Flask(__name__)
-        app.config['UPLOAD_FOLDER'] = '/app/uploads'
+        app.config['UPLOAD_FOLDER'] = resolve_upload_folder('/app/uploads')
         app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024
-
-        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
         
         logger.info("🔧 Creating Flask application...")
         
