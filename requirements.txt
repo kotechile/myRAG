@@ -22,19 +22,19 @@ flask-caching==2.1.0
 
 # Core Dependencies
 python-dotenv==1.0.1
-Pillow
+Pillow==10.4.0
 
 # AI/ML Core
 # torch is REMOVED to save space/time (only needed for heavy inference)
 openai==2.32.0
 anthropic==0.97.0
-numpy
+numpy==2.4.4
 scikit-learn==1.6.1
-joblib
-transformers>=4.41.2
-tiktoken
-matplotlib
-psutil
+joblib==1.5.3
+transformers==4.57.6
+tiktoken==0.12.0
+matplotlib==3.10.9
+psutil==7.2.2
 
 # LlamaIndex Core
 llama-index==0.14.16
@@ -44,33 +44,35 @@ llama-index-llms-deepseek==0.3.0
 llama-index-llms-anthropic==0.11.3
 llama-index-llms-google-genai==0.6.2
 llama-index-llms-openai==0.6.26
+llama-index-readers-file==0.5.6
 llama-index-vector-stores-supabase==0.5.0
 llama-index-vector-stores-chroma==0.5.5
 llama-index-vector-stores-postgres==0.8.1
 llama-index-readers-llama-parse==0.6.1
+llama-index-workflows==2.20.0
 llama-parse==0.5.20
 
 # Database & Storage
 supabase==2.5.0
-chromadb
-onnxruntime
-vecs
-pgvector
-psycopg2-binary
-asyncpg
+chromadb==1.5.8
+onnxruntime==1.25.0
+vecs==0.4.5
+pgvector==0.3.6
+psycopg2-binary==2.9.12
+asyncpg==0.31.0
 
 # MCP & Tools
-mcp
-fastmcp
-arxiv
-linkup-sdk
+mcp==1.27.0
+fastmcp==1.0
+arxiv==3.0.0
+linkup-sdk==0.13.0
 
 # Additional Dependencies
-nltk
-pandas
-pypdf
-beautifulsoup4
+nltk==3.9.4
+pandas==2.3.3
+pypdf==6.10.2
+beautifulsoup4==4.14.3
 defusedxml
 striprtf
-tenacity
-wrapt
+tenacity==9.1.4
+wrapt==1.17.3
