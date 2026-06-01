@@ -2773,15 +2773,15 @@ def create_app():
                     "processing_status": "uploading",
                     "source_type": source_type
                 }).eq("id", docid).execute()
-                
                 try:
+                    # Filter file_extractor dynamically or omit .txt to use LlamaIndex default txt parser
+                    file_extractor = {
+                        ".pdf": parser,
+                        ".docx": parser
+                    }
                     documents = SimpleDirectoryReader(
                         input_files=[local_file_path],
-                        file_extractor={
-                            ".pdf": parser,
-                            ".docx": parser,
-                            ".txt": None
-                        }
+                        file_extractor=file_extractor
                     ).load_data()
                     
                     full_parsed_text = ""
