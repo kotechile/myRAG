@@ -2606,10 +2606,15 @@ def create_app():
         for path in candidate_paths:
             try:
                 os.makedirs(path, exist_ok=True)
+                # Verify write access by attempting to create/delete a temporary test file
+                test_file = os.path.join(path, f".write_test_{os.getpid()}")
+                with open(test_file, "w") as f:
+                    f.write("test")
+                os.remove(test_file)
                 logger.info("📁 Using upload folder: %s", path)
                 return path
-            except OSError as exc:
-                logger.warning("⚠️ Could not prepare upload folder %s: %s", path, exc)
+            except Exception as exc:
+                logger.warning("⚠️ Could not prepare or write to upload folder %s: %s", path, exc)
 
         raise RuntimeError("No writable upload directory available for the Flask app")
     
@@ -4305,6 +4310,75 @@ def create_app():
             except Exception as e:
                 logger.error(f"Error getting enhancement summary: {e}")
                 return jsonify({"status": "error", "error": str(e)}), 500
+        @app.route('/debug_env', methods=['GET'])
+        def debug_env():
+            """Return masked environment variables for debugging connections."""
+            try:
+                import urllib.parse
+                
+                env_vars = {}
+                for k, v in os.environ.items():
+                    if any(x in k.upper() for x in ["DB", "CONNECTION", "SUPABASE", "DATABASE"]):
+                        # Mask password if it looks like a URI
+                        if "://" in v:
+                            try:
+                                parsed = urllib.parse.urlparse(v)
+                                if parsed.password:
+                                    masked_netloc = parsed.netloc.replace(f":{parsed.password}", ":****")
+                                    v = parsed._replace(netloc=masked_netloc).geturl()
+                            except:
+                                pass
+                        elif len(v) > 8:
+                            v = v[:3] + "..." + v[-3:]
+                        env_vars[k] = v
+                
+                # Mask global DB_CONNECTION
+                global_db = DB_CONNECTION
+                if global_db and "://" in global_db:
+                    try:
+                        parsed = urllib.parse.urlparse(global_db)
+                        if parsed.password:
+                            masked_netloc = parsed.netloc.replace(f":{parsed.password}", ":****")
+                            global_db = parsed._replace(netloc=masked_netloc).geturl()
+                    except:
+                        pass
+                
+                # Check for .env file
+                dot_env_exists = os.path.exists(".env")
+                dot_env_vars = {}
+                if dot_env_exists:
+                    try:
+                        with open(".env", "r") as f:
+                            for line in f:
+                                if "=" in line and not line.strip().startswith("#"):
+                                    parts = line.strip().split("=", 1)
+                                    if len(parts) == 2:
+                                        k, v = parts
+                                        if any(x in k.upper() for x in ["DB", "CONNECTION", "SUPABASE", "DATABASE"]):
+                                            if "://" in v:
+                                                try:
+                                                    parsed = urllib.parse.urlparse(v)
+                                                    if parsed.password:
+                                                        masked_netloc = parsed.netloc.replace(f":{parsed.password}", ":****")
+                                                        v = parsed._replace(netloc=masked_netloc).geturl()
+                                                except:
+                                                    pass
+                                            elif len(v) > 8:
+                                                v = v[:3] + "..." + v[-3:]
+                                            dot_env_vars[k] = v
+                    except Exception as e:
+                        dot_env_vars["error"] = str(e)
+                
+                return jsonify({
+                    "env_vars": env_vars,
+                    "global_db_connection": global_db,
+                    "dot_env_exists": dot_env_exists,
+                    "dot_env_vars": dot_env_vars,
+                    "current_working_dir": os.getcwd()
+                })
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+
 ####################
 
 
