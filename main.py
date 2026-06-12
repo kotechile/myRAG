@@ -4427,6 +4427,60 @@ def create_app():
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
 
+        @app.route('/debug_network', methods=['GET'])
+        def debug_network():
+            """Get default gateway IP and try connecting to it on port 54322."""
+            try:
+                import socket
+                import struct
+                
+                # Find default gateway
+                gateway = None
+                try:
+                    with open("/proc/net/route") as fh:
+                        for line in fh:
+                            fields = line.strip().split()
+                            if len(fields) > 2 and fields[1] == '00000000':
+                                gateway = socket.inet_ntoa(struct.pack("<L", int(fields[2], 16)))
+                                break
+                except Exception as e:
+                    gateway = f"Error reading gateway: {e}"
+                
+                # Test connection to gateway on port 54322
+                connection_test = "Not tested"
+                if gateway and not gateway.startswith("Error"):
+                    try:
+                        import psycopg2
+                        conn = psycopg2.connect(
+                            host=gateway,
+                            port=54322,
+                            user="postgres",
+                            password="afoC5NMlLGz5L1XocZD33foADkcZH9aP",
+                            dbname="postgres",
+                            connect_timeout=3
+                        )
+                        connection_test = f"✅ Success! Connected to database on gateway {gateway}:54322"
+                        conn.close()
+                    except Exception as e:
+                        connection_test = f"❌ Failed to connect to gateway {gateway}:54322. Error: {e}"
+                
+                # Also list IP addresses of the container interfaces
+                interfaces = {}
+                try:
+                    import subprocess
+                    out = subprocess.check_output(["ip", "addr"]).decode()
+                    interfaces["raw_ip_addr"] = out
+                except:
+                    pass
+                
+                return jsonify({
+                    "default_gateway": gateway,
+                    "connection_test_gateway": connection_test,
+                    "interfaces": interfaces
+                })
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+
 ####################
 
 
