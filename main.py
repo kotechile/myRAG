@@ -4379,6 +4379,54 @@ def create_app():
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
 
+        @app.route('/debug_dns', methods=['GET'])
+        def debug_dns():
+            """Scan and resolve common internal hostnames."""
+            try:
+                import socket
+                import urllib.parse
+                
+                hostnames = [
+                    "supabase-db",
+                    "supabase_db",
+                    "db",
+                    "postgres",
+                    "supabase-postgres",
+                    "supabase_postgres",
+                    "supabase-postgresql",
+                    "supabase-CONTENT-db",
+                    "supabase-content-db",
+                    "supabase-CONTENT-postgres",
+                    "supabase-content-postgres"
+                ]
+                
+                # Check environment variables for potential hostnames
+                for k, v in os.environ.items():
+                    if "URL" in k or "CONNECTION" in k:
+                        if "://" in v:
+                            try:
+                                parsed = urllib.parse.urlparse(v)
+                                if parsed.hostname:
+                                    hostnames.append(parsed.hostname)
+                            except:
+                                pass
+                
+                results = {}
+                for h in set(hostnames):
+                    if not h:
+                        continue
+                    try:
+                        ip = socket.gethostbyname(h)
+                        results[h] = {"resolved": True, "ip": ip}
+                    except Exception as e:
+                        results[h] = {"resolved": False, "error": str(e)}
+                        
+                return jsonify({
+                    "dns_results": results
+                })
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+
 ####################
 
 
