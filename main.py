@@ -4387,6 +4387,7 @@ def create_app():
                 import urllib.parse
                 
                 hostnames = [
+                    "z952v4fgbbg1qyuzfbb5vz73-proxy",
                     "supabase-db-vl3yb4aunkfljl17ahqxnsu1",
                     "supabase-db",
                     "supabase_db",
