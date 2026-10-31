@@ -65,9 +65,37 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 
+
+def resolve_embedding_api_key(attempts: int = 5, delay: float = 3.0) -> str:
+    """Resolve the embeddings key from `api_keys` (provider 'openai').
+
+    The key used to be resolved once, at import time, with no check: a container that
+    started before PostgREST was reachable built a keyless embedding model for its whole
+    lifetime, so every chunk failed to embed and the ingest still reported success while
+    the collection held zero vectors. Retry briefly, then fail loudly so the container is
+    restarted instead of serving a silently broken index.
+    """
+    for attempt in range(1, attempts + 1):
+        key = db_config.get_api_key("openai") or OPENAI_API_KEY
+        if key:
+            return key
+        logger.warning(
+            "Embedding API key not resolvable yet (attempt %d/%d); retrying in %.0fs",
+            attempt,
+            attempts,
+            delay,
+        )
+        time.sleep(delay)
+    raise RuntimeError(
+        "No OpenAI embedding API key: set api_keys.key_value for provider 'openai' "
+        "(the vector index is built with text-embedding-3-small)."
+    )
+
 # Database configuration
 DB_CONNECTION = os.getenv("DB_CONNECTION") or f"postgresql://postgres.dgcsqiaciyqvprtpopxg:{SUPABASE_DATABASE_PASSWORD}@aws-0-us-west-1.pooler.supabase.com:5432/postgres"
-DEFAULT_LLM_PROVIDER = "deepseek"
+# Role in `used_for` (used_for.used_for = "rag") that selects the model for every
+# RAG query. A provider/model name still works as an explicit override.
+DEFAULT_LLM_PROVIDER = "rag"
 
 # Global storage
 active_jobs = {}
@@ -106,12 +134,21 @@ job_lock = threading.Lock()  # Thread-safe access to jobs dictionary
 
 
 def get_runtime_llm_config(provider_name: str = DEFAULT_LLM_PROVIDER) -> Dict[str, Any]:
-    """Load the provider config, including API key, from the DB-backed configuration."""
+    """Load the model + API key for a `used_for` role, or for an explicit provider.
+
+    Roles ('rag', 'research', ...) are resolved through `used_for` -> `llm_providers`
+    -> `api_keys`. Anything that is not a configured role is treated as a provider or
+    model name so existing callers keep working.
+    """
+    role_config = db_config.get_llm_config_for_role(provider_name)
+    if role_config:
+        return role_config
+
     llm_config = db_config.get_llm_config(provider_name=provider_name)
     if not llm_config or not llm_config.get("api_key"):
         raise ValueError(
-            f"No API-backed configuration found for provider '{provider_name}'. "
-            "Check llm_providers.api_keys_id and api_keys.key_value."
+            f"No API-backed configuration found for role or provider '{provider_name}'. "
+            "Check used_for.llm_provider_id, llm_providers.api_keys_id and api_keys.key_value."
         )
     return llm_config
 
@@ -217,6 +254,9 @@ class EmbeddingModelManager:
     
     def _create_embedding_model(self):
         """Create the appropriate embedding model."""
+        # Resolved (and retried) before building the model: a keyless model would embed
+        # nothing for the lifetime of the process while ingestion reports success.
+        _embedding_key = resolve_embedding_api_key()
         use_optimization = self._is_optimization_enabled()
         require_prebuilt_optimizer = self._is_prebuilt_optimizer_required()
         optimizer_path = "optimizer_128d_int8.joblib"
@@ -240,7 +280,7 @@ class EmbeddingModelManager:
                 if os.path.exists(optimizer_path):
                     optimizer = CombinedOptimizer.load(optimizer_path)
                     embed_model = OptimizedOpenAIEmbedding(
-                        api_key=db_config.get_api_key("openai") or OPENAI_API_KEY,
+                        api_key=_embedding_key,
                         model=OPENAI_EMBEDDING_MODEL,
                         optimizer=optimizer,
                         embed_batch_size=10
@@ -259,7 +299,7 @@ class EmbeddingModelManager:
                     )
                     optimizer = create_128d_int8_optimizer()
                     embed_model = OptimizedOpenAIEmbedding(
-                        api_key=db_config.get_api_key("openai") or OPENAI_API_KEY,
+                        api_key=_embedding_key,
                         model=OPENAI_EMBEDDING_MODEL,
                         optimizer=optimizer,
                         embed_batch_size=10
@@ -275,7 +315,7 @@ class EmbeddingModelManager:
         logger.info("📐 Using standard OpenAI embeddings (1536D)")
         self._fitted = True
         return OpenAIEmbedding(
-            api_key=db_config.get_api_key("openai") or OPENAI_API_KEY,
+            api_key=_embedding_key,
             model=OPENAI_EMBEDDING_MODEL,
             embed_batch_size=10
         )

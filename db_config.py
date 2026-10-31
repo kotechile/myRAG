@@ -187,6 +187,91 @@ def get_llm_config(provider_name: str = None, model_name: str = None) -> Optiona
         logger.error(f"Error fetching LLM config from database: {e}")
         return None
 
+def get_llm_config_for_role(role: str) -> Optional[Dict[str, Any]]:
+    """Resolve the model for a role from `used_for`, with the key from `api_keys`.
+
+    `used_for` (used_for = role -> llm_provider_id) is the single source of truth for
+    which model does which job; the key is reached through
+    `llm_providers.api_keys_id -> api_keys.key_value`. Returns None when the role is not
+    configured, so callers can fall back to a provider/model lookup.
+    """
+    if not supabase:
+        logger.error("Supabase client is not initialized.")
+        return None
+    if not role:
+        return None
+
+    try:
+        role_rows = (
+            supabase.table("used_for")
+            .select("used_for,llm_provider_id,llm_image_id")
+            .ilike("used_for", role)
+            .execute()
+        ).data or []
+        if not role_rows:
+            logger.info("No used_for role '%s'; falling back to provider lookup", role)
+            return None
+
+        provider_id = role_rows[0].get("llm_provider_id")
+        if not provider_id:
+            logger.error("used_for role '%s' has no llm_provider_id", role)
+            return None
+
+        rows = (
+            supabase.table("llm_providers").select("*").eq("id", provider_id).limit(1).execute()
+        ).data or []
+        if not rows:
+            logger.error("llm_providers row %s for role '%s' not found", provider_id, role)
+            return None
+
+        provider_config = rows[0]
+        api_key = None
+        api_key_id = provider_config.get("api_keys_id")
+        if api_key_id:
+            key_rows = (
+                supabase.table("api_keys")
+                .select("key_value")
+                .eq("id", api_key_id)
+                .limit(1)
+                .execute()
+            ).data or []
+            api_key = key_rows[0].get("key_value") if key_rows else None
+        if not api_key:
+            api_key = get_api_key(provider_config.get("provider") or role)
+        if not api_key:
+            logger.error(
+                "Role '%s' resolved to %s/%s but api_keys has no usable key (api_keys_id=%s)",
+                role,
+                provider_config.get("provider"),
+                provider_config.get("model_name"),
+                api_key_id,
+            )
+            return None
+
+        config = {
+            "provider": normalize_provider_name(provider_config.get("provider")),
+            "model": provider_config.get("model_name"),
+            "api_key": api_key,
+            "temperature": provider_config.get("temperature"),
+            "max_tokens": provider_config.get("max_tokens"),
+            "top_p": provider_config.get("top_p"),
+            "frequency_penalty": provider_config.get("frequency_penalty"),
+            "presence_penalty": provider_config.get("presence_penalty"),
+        }
+        resolved = {k: v for k, v in config.items() if v is not None}
+        logger.info(
+            "Role '%s' -> %s/%s (key from api_keys)",
+            role,
+            resolved.get("provider"),
+            resolved.get("model"),
+        )
+        return resolved
+
+    except Exception as e:
+        logger.error("Error resolving role '%s' from used_for: %s", role, e)
+        return None
+
+
 def get_default_llm_config() -> Optional[Dict[str, Any]]:
     """Helper to get the default active LLM configuration."""
     return get_llm_config()
